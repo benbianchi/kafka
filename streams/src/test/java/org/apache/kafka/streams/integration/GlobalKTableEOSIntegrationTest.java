@@ -23,14 +23,15 @@ import org.apache.kafka.common.serialization.LongSerializer;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.StoreQueryParameters;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.integration.utils.EmbeddedKafkaCluster;
 import org.apache.kafka.streams.integration.utils.IntegrationTestUtils;
+import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.GlobalKTable;
 import org.apache.kafka.streams.kstream.KStream;
@@ -41,21 +42,24 @@ import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
 import org.apache.kafka.test.IntegrationTest;
-import org.apache.kafka.test.TestCondition;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
-import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
 
+@RunWith(Parameterized.class)
 @Category({IntegrationTest.class})
 public class GlobalKTableEOSIntegrationTest {
     private static final int NUM_BROKERS = 1;
@@ -70,20 +74,21 @@ public class GlobalKTableEOSIntegrationTest {
     public static final EmbeddedKafkaCluster CLUSTER =
             new EmbeddedKafkaCluster(NUM_BROKERS, BROKER_CONFIG);
 
-    private static volatile int testNo = 0;
+    @Parameterized.Parameters(name = "{0}")
+    public static Collection<String[]> data() {
+        return Arrays.asList(new String[][] {
+            {StreamsConfig.EXACTLY_ONCE},
+            {StreamsConfig.EXACTLY_ONCE_BETA}
+        });
+    }
+
+    @Parameterized.Parameter
+    public String eosConfig;
+
+    private static volatile AtomicInteger testNo = new AtomicInteger(0);
     private final MockTime mockTime = CLUSTER.time;
-    private final KeyValueMapper<String, Long, Long> keyMapper = new KeyValueMapper<String, Long, Long>() {
-        @Override
-        public Long apply(final String key, final Long value) {
-            return value;
-        }
-    };
-    private final ValueJoiner<Long, String, String> joiner = new ValueJoiner<Long, String, String>() {
-        @Override
-        public String apply(final Long value1, final String value2) {
-            return value1 + "+" + value2;
-        }
-    };
+    private final KeyValueMapper<String, Long, Long> keyMapper = (key, value) -> value;
+    private final ValueJoiner<Long, String, String> joiner = (value1, value2) -> value1 + "+" + value2;
     private final String globalStore = "globalStore";
     private final Map<String, String> results = new HashMap<>();
     private StreamsBuilder builder;
@@ -96,36 +101,29 @@ public class GlobalKTableEOSIntegrationTest {
     private ForeachAction<String, String> foreachAction;
 
     @Before
-    public void before() throws InterruptedException {
-        testNo++;
+    public void before() throws Exception {
         builder = new StreamsBuilder();
         createTopics();
         streamsConfiguration = new Properties();
-        final String applicationId = "globalTableTopic-table-eos-test-" + testNo;
+        final String applicationId = "globalTableTopic-table-eos-test-" + testNo.incrementAndGet();
         streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG, applicationId);
         streamsConfiguration.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
         streamsConfiguration.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         streamsConfiguration.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory().getPath());
         streamsConfiguration.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
-        streamsConfiguration.put(IntegrationTestUtils.INTERNAL_LEAVE_GROUP_ON_CLOSE, true);
         streamsConfiguration.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
-        streamsConfiguration.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, "exactly_once");
+        streamsConfiguration.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, eosConfig);
         globalTable = builder.globalTable(globalTableTopic, Consumed.with(Serdes.Long(), Serdes.String()),
                                           Materialized.<Long, String, KeyValueStore<Bytes, byte[]>>as(globalStore)
                                                   .withKeySerde(Serdes.Long())
                                                   .withValueSerde(Serdes.String()));
         final Consumed<String, Long> stringLongConsumed = Consumed.with(Serdes.String(), Serdes.Long());
         stream = builder.stream(streamTopic, stringLongConsumed);
-        foreachAction = new ForeachAction<String, String>() {
-            @Override
-            public void apply(final String key, final String value) {
-                results.put(key, value);
-            }
-        };
+        foreachAction = results::put;
     }
 
     @After
-    public void whenShuttingDown() throws IOException {
+    public void whenShuttingDown() throws Exception {
         if (kafkaStreams != null) {
             kafkaStreams.close();
         }
@@ -147,24 +145,22 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put("d", "4+D");
         expected.put("e", "5+null");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return results.equals(expected);
-            }
-        }, 30000L, "waiting for initial values");
+        TestUtils.waitForCondition(
+            () -> results.equals(expected),
+            30000L,
+            "waiting for initial values");
 
 
         produceGlobalTableValues();
 
-        final ReadOnlyKeyValueStore<Long, String> replicatedStore = kafkaStreams.store(globalStore, QueryableStoreTypes.<Long, String>keyValueStore());
+        final ReadOnlyKeyValueStore<Long, String> replicatedStore =
+            kafkaStreams.store(StoreQueryParameters.fromNameAndType(globalStore, QueryableStoreTypes.keyValueStore()));
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return "J".equals(replicatedStore.get(5L));
-            }
-        }, 30000, "waiting for data in replicated store");
+        TestUtils.waitForCondition(
+            () -> "J".equals(replicatedStore.get(5L)),
+            30000,
+            "waiting for data in replicated store");
+
         produceTopicValues(streamTopic);
 
         expected.put("a", "1+F");
@@ -173,12 +169,10 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put("d", "4+I");
         expected.put("e", "5+J");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return results.equals(expected);
-            }
-        }, 30000L, "waiting for final values");
+        TestUtils.waitForCondition(
+            () -> results.equals(expected),
+            30000L,
+            "waiting for final values");
     }
 
     @Test
@@ -195,24 +189,21 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put("c", "3+C");
         expected.put("d", "4+D");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return results.equals(expected);
-            }
-        }, 30000L, "waiting for initial values");
+        TestUtils.waitForCondition(
+            () -> results.equals(expected),
+            30000L,
+            "waiting for initial values");
 
 
         produceGlobalTableValues();
 
-        final ReadOnlyKeyValueStore<Long, String> replicatedStore = kafkaStreams.store(globalStore, QueryableStoreTypes.<Long, String>keyValueStore());
+        final ReadOnlyKeyValueStore<Long, String> replicatedStore =
+            kafkaStreams.store(StoreQueryParameters.fromNameAndType(globalStore, QueryableStoreTypes.keyValueStore()));
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return "J".equals(replicatedStore.get(5L));
-            }
-        }, 30000, "waiting for data in replicated store");
+        TestUtils.waitForCondition(
+            () -> "J".equals(replicatedStore.get(5L)),
+            30000,
+            "waiting for data in replicated store");
 
         produceTopicValues(streamTopic);
 
@@ -222,12 +213,10 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put("d", "4+I");
         expected.put("e", "5+J");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return results.equals(expected);
-            }
-        }, 30000L, "waiting for final values");
+        TestUtils.waitForCondition(
+            () -> results.equals(expected),
+            30000L,
+            "waiting for final values");
     }
 
     @Test
@@ -242,12 +231,11 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put(3L, "C");
         expected.put(4L, "D");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                ReadOnlyKeyValueStore<Long, String> store = null;
+        TestUtils.waitForCondition(
+            () -> {
+                final ReadOnlyKeyValueStore<Long, String> store;
                 try {
-                    store = kafkaStreams.store(globalStore, QueryableStoreTypes.<Long, String>keyValueStore());
+                    store = kafkaStreams.store(StoreQueryParameters.fromNameAndType(globalStore, QueryableStoreTypes.keyValueStore()));
                 } catch (final InvalidStateStoreException ex) {
                     return false;
                 }
@@ -258,8 +246,9 @@ public class GlobalKTableEOSIntegrationTest {
                     result.put(kv.key, kv.value);
                 }
                 return result.equals(expected);
-            }
-        }, 30000L, "waiting for initial values");
+            },
+            30000L,
+            "waiting for initial values");
     }
     
     @Test
@@ -276,12 +265,11 @@ public class GlobalKTableEOSIntegrationTest {
         expected.put(3L, "C");
         expected.put(4L, "D");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                ReadOnlyKeyValueStore<Long, String> store = null;
+        TestUtils.waitForCondition(
+            () -> {
+                final ReadOnlyKeyValueStore<Long, String> store;
                 try {
-                    store = kafkaStreams.store(globalStore, QueryableStoreTypes.<Long, String>keyValueStore());
+                    store = kafkaStreams.store(StoreQueryParameters.fromNameAndType(globalStore, QueryableStoreTypes.keyValueStore()));
                 } catch (final InvalidStateStoreException ex) {
                     return false;
                 }
@@ -292,11 +280,12 @@ public class GlobalKTableEOSIntegrationTest {
                     result.put(kv.key, kv.value);
                 }
                 return result.equals(expected);
-            }
-        }, 30000L, "waiting for initial values");
+            },
+            30000L,
+            "waiting for initial values");
     }
 
-    private void createTopics() throws InterruptedException {
+    private void createTopics() throws Exception {
         streamTopic = "stream-" + testNo;
         globalTableTopic = "globalTable-" + testNo;
         CLUSTER.createTopics(streamTopic);
@@ -345,15 +334,9 @@ public class GlobalKTableEOSIntegrationTest {
     }
 
     private void produceInitialGlobalTableValues() throws Exception {
-        produceInitialGlobalTableValues(true);
-    }
-
-    private void produceInitialGlobalTableValues(final boolean enableTransactions) throws Exception {
         final Properties properties = new Properties();
-        if (enableTransactions) {
-            properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "someid");
-            properties.put(ProducerConfig.RETRIES_CONFIG, 1);
-        }
+        properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "someid");
+        properties.put(ProducerConfig.RETRIES_CONFIG, 1);
         IntegrationTestUtils.produceKeyValuesSynchronously(
                 globalTableTopic,
                 Arrays.asList(
@@ -368,7 +351,7 @@ public class GlobalKTableEOSIntegrationTest {
                         StringSerializer.class,
                         properties),
                 mockTime,
-                enableTransactions);
+                true);
     }
 
     private void produceGlobalTableValues() throws Exception {

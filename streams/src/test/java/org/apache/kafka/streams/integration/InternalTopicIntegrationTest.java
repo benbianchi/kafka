@@ -18,7 +18,7 @@ package org.apache.kafka.streams.integration;
 
 import kafka.log.LogConfig;
 import kafka.utils.MockTime;
-import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.ConfigEntry;
@@ -57,6 +57,8 @@ import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import static java.time.Duration.ofMillis;
+import static java.time.Duration.ofSeconds;
 import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.waitForCompletion;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -91,7 +93,6 @@ public class InternalTopicIntegrationTest {
         streamsProp.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
         streamsProp.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
         streamsProp.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        streamsProp.put(IntegrationTestUtils.INTERNAL_LEAVE_GROUP_ON_CLOSE, true);
     }
 
     @After
@@ -112,7 +113,7 @@ public class InternalTopicIntegrationTest {
     }
 
     private Properties getTopicProperties(final String changelog) {
-        try (final AdminClient adminClient = createAdminClient()) {
+        try (final Admin adminClient = createAdminClient()) {
             final ConfigResource configResource = new ConfigResource(ConfigResource.Type.TOPIC, changelog);
             try {
                 final Config config = adminClient.describeConfigs(Collections.singletonList(configResource)).values().get(configResource).get();
@@ -129,10 +130,10 @@ public class InternalTopicIntegrationTest {
         }
     }
 
-    private AdminClient createAdminClient() {
+    private Admin createAdminClient() {
         final Properties adminClientConfig = new Properties();
         adminClientConfig.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
-        return AdminClient.create(adminClientConfig);
+        return Admin.create(adminClientConfig);
     }
 
     @Test
@@ -161,7 +162,7 @@ public class InternalTopicIntegrationTest {
         //
         // Step 3: Verify the state changelog topics are compact
         //
-        waitForCompletion(streams, 2, 10000);
+        waitForCompletion(streams, 2, 30000);
         streams.close();
 
         final Properties changelogProps = getTopicProperties(ProcessorStateManager.storeChangelogTopic(appID, "Counts"));
@@ -169,7 +170,7 @@ public class InternalTopicIntegrationTest {
 
         final Properties repartitionProps = getTopicProperties(appID + "-Counts-repartition");
         assertEquals(LogConfig.Delete(), repartitionProps.getProperty(LogConfig.CleanupPolicyProp()));
-        assertEquals(5, repartitionProps.size());
+        assertEquals(4, repartitionProps.size());
     }
 
     @Test
@@ -187,8 +188,8 @@ public class InternalTopicIntegrationTest {
 
         textLines.flatMapValues(value -> Arrays.asList(value.toLowerCase(Locale.getDefault()).split("\\W+")))
             .groupBy(MockMapper.selectValueMapper())
-            .windowedBy(TimeWindows.of(1000).grace(0L))
-            .count(Materialized.<String, Long, WindowStore<Bytes, byte[]>>as("CountWindows").withRetention(2_000L));
+            .windowedBy(TimeWindows.of(ofSeconds(1L)).grace(ofMillis(0L)))
+            .count(Materialized.<String, Long, WindowStore<Bytes, byte[]>>as("CountWindows").withRetention(ofSeconds(2L)));
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), streamsProp);
         streams.start();
@@ -201,7 +202,7 @@ public class InternalTopicIntegrationTest {
         //
         // Step 3: Verify the state changelog topics are compact
         //
-        waitForCompletion(streams, 2, 5000);
+        waitForCompletion(streams, 2, 30000);
         streams.close();
         final Properties properties = getTopicProperties(ProcessorStateManager.storeChangelogTopic(appID, "CountWindows"));
         final List<String> policies = Arrays.asList(properties.getProperty(LogConfig.CleanupPolicyProp()).split(","));
@@ -214,6 +215,6 @@ public class InternalTopicIntegrationTest {
 
         final Properties repartitionProps = getTopicProperties(appID + "-CountWindows-repartition");
         assertEquals(LogConfig.Delete(), repartitionProps.getProperty(LogConfig.CleanupPolicyProp()));
-        assertEquals(5, repartitionProps.size());
+        assertEquals(4, repartitionProps.size());
     }
 }

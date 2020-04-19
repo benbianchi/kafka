@@ -252,8 +252,8 @@ public class Topology {
      * @throws TopologyException if processor is already added or if topics have already been registered by another source
      */
     public synchronized Topology addSource(final String name,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final String... topics) {
         internalTopologyBuilder.addSource(null, name, null, keyDeserializer, valueDeserializer, topics);
         return this;
@@ -278,8 +278,8 @@ public class Topology {
      * @throws TopologyException if processor is already added or if topics have already been registered by name
      */
     public synchronized Topology addSource(final String name,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final Pattern topicPattern) {
         internalTopologyBuilder.addSource(null, name, null, keyDeserializer, valueDeserializer, topicPattern);
         return this;
@@ -304,10 +304,11 @@ public class Topology {
      * @return itself
      * @throws TopologyException if processor is already added or if topics have already been registered by name
      */
+    @SuppressWarnings("overloads")
     public synchronized Topology addSource(final AutoOffsetReset offsetReset,
                                            final String name,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final String... topics) {
         internalTopologyBuilder.addSource(offsetReset, name, null, keyDeserializer, valueDeserializer, topics);
         return this;
@@ -334,8 +335,8 @@ public class Topology {
      */
     public synchronized Topology addSource(final AutoOffsetReset offsetReset,
                                            final String name,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final Pattern topicPattern) {
         internalTopologyBuilder.addSource(offsetReset, name, null, keyDeserializer, valueDeserializer, topicPattern);
         return this;
@@ -359,12 +360,12 @@ public class Topology {
      * @return itself
      * @throws TopologyException if processor is already added or if topics have already been registered by another source
      */
-
+    @SuppressWarnings("overloads")
     public synchronized Topology addSource(final AutoOffsetReset offsetReset,
                                            final String name,
                                            final TimestampExtractor timestampExtractor,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final String... topics) {
         internalTopologyBuilder.addSource(offsetReset, name, timestampExtractor, keyDeserializer, valueDeserializer, topics);
         return this;
@@ -391,11 +392,12 @@ public class Topology {
      * @return itself
      * @throws TopologyException if processor is already added or if topics have already been registered by name
      */
+    @SuppressWarnings("overloads")
     public synchronized Topology addSource(final AutoOffsetReset offsetReset,
                                            final String name,
                                            final TimestampExtractor timestampExtractor,
-                                           final Deserializer keyDeserializer,
-                                           final Deserializer valueDeserializer,
+                                           final Deserializer<?> keyDeserializer,
+                                           final Deserializer<?> valueDeserializer,
                                            final Pattern topicPattern) {
         internalTopologyBuilder.addSource(offsetReset, name, timestampExtractor, keyDeserializer, valueDeserializer, topicPattern);
         return this;
@@ -649,6 +651,7 @@ public class Topology {
      * @return itself
      * @throws TopologyException if parent processor is not added yet, or if this processor's name is equal to the parent's name
      */
+    @SuppressWarnings("rawtypes")
     public synchronized Topology addProcessor(final String name,
                                               final ProcessorSupplier supplier,
                                               final String... parentNames) {
@@ -664,7 +667,7 @@ public class Topology {
      * @return itself
      * @throws TopologyException if state store supplier is already added
      */
-    public synchronized Topology addStateStore(final StoreBuilder storeBuilder,
+    public synchronized Topology addStateStore(final StoreBuilder<?> storeBuilder,
                                                final String... processorNames) {
         internalTopologyBuilder.addStateStore(storeBuilder, processorNames);
         return this;
@@ -693,16 +696,23 @@ public class Topology {
      * @return itself
      * @throws TopologyException if the processor of state is already registered
      */
-    @SuppressWarnings("unchecked")
-    public synchronized Topology addGlobalStore(final StoreBuilder storeBuilder,
-                                                final String sourceName,
-                                                final Deserializer keyDeserializer,
-                                                final Deserializer valueDeserializer,
-                                                final String topic,
-                                                final String processorName,
-                                                final ProcessorSupplier stateUpdateSupplier) {
-        internalTopologyBuilder.addGlobalStore(storeBuilder, sourceName, null, keyDeserializer,
-            valueDeserializer, topic, processorName, stateUpdateSupplier);
+    public synchronized <K, V> Topology addGlobalStore(final StoreBuilder<?> storeBuilder,
+                                                       final String sourceName,
+                                                       final Deserializer<K> keyDeserializer,
+                                                       final Deserializer<V> valueDeserializer,
+                                                       final String topic,
+                                                       final String processorName,
+                                                       final ProcessorSupplier<K, V> stateUpdateSupplier) {
+        internalTopologyBuilder.addGlobalStore(
+            storeBuilder,
+            sourceName,
+            null,
+            keyDeserializer,
+            valueDeserializer,
+            topic,
+            processorName,
+            stateUpdateSupplier
+        );
         return this;
     }
 
@@ -730,17 +740,24 @@ public class Topology {
      * @return itself
      * @throws TopologyException if the processor of state is already registered
      */
-    @SuppressWarnings("unchecked")
-    public synchronized Topology addGlobalStore(final StoreBuilder storeBuilder,
-                                                final String sourceName,
-                                                final TimestampExtractor timestampExtractor,
-                                                final Deserializer keyDeserializer,
-                                                final Deserializer valueDeserializer,
-                                                final String topic,
-                                                final String processorName,
-                                                final ProcessorSupplier stateUpdateSupplier) {
-        internalTopologyBuilder.addGlobalStore(storeBuilder, sourceName, timestampExtractor, keyDeserializer,
-            valueDeserializer, topic, processorName, stateUpdateSupplier);
+    public synchronized <K, V> Topology addGlobalStore(final StoreBuilder<?> storeBuilder,
+                                                       final String sourceName,
+                                                       final TimestampExtractor timestampExtractor,
+                                                       final Deserializer<K> keyDeserializer,
+                                                       final Deserializer<V> valueDeserializer,
+                                                       final String topic,
+                                                       final String processorName,
+                                                       final ProcessorSupplier<K, V> stateUpdateSupplier) {
+        internalTopologyBuilder.addGlobalStore(
+            storeBuilder,
+            sourceName,
+            timestampExtractor,
+            keyDeserializer,
+            valueDeserializer,
+            topic,
+            processorName,
+            stateUpdateSupplier
+        );
         return this;
     }
 

@@ -17,10 +17,12 @@
 
 package org.apache.kafka.streams.tests;
 
+import java.time.Duration;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.KafkaStreams;
@@ -33,7 +35,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.TimeUnit;
 
 public class StreamsBrokerDownResilienceTest {
 
@@ -97,34 +98,28 @@ public class StreamsBrokerDownResilienceTest {
                 public void apply(final String key, final String value) {
                     System.out.println("received key " + key + " and value " + value);
                     messagesProcessed++;
-                    System.out.println("processed" + messagesProcessed + "messages");
+                    System.out.println("processed " + messagesProcessed + " messages");
                     System.out.flush();
                 }
             }).to(SINK_TOPIC);
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), streamsProperties);
 
-        streams.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-            @Override
-            public void uncaughtException(final Thread t, final Throwable e) {
+        streams.setUncaughtExceptionHandler((t, e) -> {
                 System.err.println("FATAL: An unexpected exception " + e);
                 System.err.flush();
-                streams.close(30, TimeUnit.SECONDS);
+                streams.close(Duration.ofSeconds(30));
             }
-        });
+        );
+
         System.out.println("Start Kafka Streams");
         streams.start();
 
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                streams.close(30, TimeUnit.SECONDS);
-                System.out.println("Complete shutdown of streams resilience test app now");
-                System.out.flush();
-            }
-        }));
-
-
+        Exit.addShutdownHook("streams-shutdown-hook", () -> {
+            streams.close(Duration.ofSeconds(30));
+            System.out.println("Complete shutdown of streams resilience test app now");
+            System.out.flush();
+        });
     }
 
     private static boolean confirmCorrectConfigs(final Properties properties) {

@@ -30,7 +30,7 @@ class ServerStartupTest extends ZooKeeperTestHarness {
   private var server: KafkaServer = null
 
   @After
-  override def tearDown() {
+  override def tearDown(): Unit = {
     if (server != null)
       TestUtils.shutdownServers(Seq(server))
     super.tearDown()
@@ -42,7 +42,7 @@ class ServerStartupTest extends ZooKeeperTestHarness {
     val zookeeperChroot = "/kafka-chroot-for-unittest"
     val props = TestUtils.createBrokerConfig(brokerId, zkConnect)
     val zooKeeperConnect = props.get("zookeeper.connect")
-    props.put("zookeeper.connect", zooKeeperConnect + zookeeperChroot)
+    props.put("zookeeper.connect", zooKeeperConnect.toString + zookeeperChroot)
     server = TestUtils.createServer(KafkaConfig.fromProps(props))
 
     val pathExists = zkClient.pathExists(zookeeperChroot)
@@ -105,7 +105,7 @@ class ServerStartupTest extends ZooKeeperTestHarness {
   @Test
   def testBrokerStateRunningAfterZK(): Unit = {
     val brokerId = 0
-    val mockBrokerState = EasyMock.niceMock(classOf[kafka.server.BrokerState])
+    val mockBrokerState: BrokerState = EasyMock.niceMock(classOf[BrokerState])
 
     class BrokerStateInterceptor() extends BrokerState {
       override def newState(newState: BrokerStates): Unit = {

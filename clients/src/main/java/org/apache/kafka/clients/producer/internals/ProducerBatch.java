@@ -17,6 +17,7 @@
 package org.apache.kafka.clients.producer.internals;
 
 import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
@@ -31,6 +32,7 @@ import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.requests.ProduceResponse;
+import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,9 +74,8 @@ public final class ProducerBatch {
     private long lastAttemptMs;
     private long lastAppendTime;
     private long drainedMs;
-    private String expiryErrorMessage;
     private boolean retry;
-    private boolean reopened = false;
+    private boolean reopened;
 
     public ProducerBatch(TopicPartition tp, MemoryRecordsBuilder recordsBuilder, long createdMs) {
         this(tp, recordsBuilder, createdMs, false);
@@ -110,7 +111,8 @@ public final class ProducerBatch {
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, checksum,
                                                                    key == null ? -1 : key.length,
-                                                                   value == null ? -1 : value.length);
+                                                                   value == null ? -1 : value.length,
+                                                                   Time.SYSTEM);
             // we have to keep every future returned to the users in case the batch needs to be
             // split to several new batches and resent.
             thunks.add(new Thunk(callback, future));
@@ -134,7 +136,8 @@ public final class ProducerBatch {
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, thunk.future.checksumOrNull(),
                                                                    key == null ? -1 : key.remaining(),
-                                                                   value == null ? -1 : value.remaining());
+                                                                   value == null ? -1 : value.remaining(),
+                                                                   Time.SYSTEM);
             // Chain the future to the original thunk.
             thunk.future.chain(future);
             this.thunks.add(thunk);
@@ -154,6 +157,13 @@ public final class ProducerBatch {
 
         log.trace("Aborting batch for partition {}", topicPartition, exception);
         completeFutureAndFireCallbacks(ProduceResponse.INVALID_OFFSET, RecordBatch.NO_TIMESTAMP, exception);
+    }
+
+    /**
+     * Return `true` if {@link #done(long, long, RuntimeException)} has been invoked at least once, `false` otherwise.
+     */
+    public boolean isDone() {
+        return finalState() != null;
     }
 
     /**
@@ -258,14 +268,17 @@ public final class ProducerBatch {
             // A newly created batch can always host the first message.
             if (!batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk)) {
                 batches.add(batch);
+                batch.closeForRecordAppends();
                 batch = createBatchOffAccumulatorForRecord(record, splitBatchSize);
                 batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk);
             }
         }
 
         // Close the last batch and add it to the batch list after split.
-        if (batch != null)
+        if (batch != null) {
             batches.add(batch);
+            batch.closeForRecordAppends();
+        }
 
         produceFuture.set(ProduceResponse.INVALID_OFFSET, NO_TIMESTAMP, new RecordBatchTooLargeException());
         produceFuture.done();
@@ -379,6 +392,8 @@ public final class ProducerBatch {
     }
 
     public void resetProducerState(ProducerIdAndEpoch producerIdAndEpoch, int baseSequence, boolean isTransactional) {
+        log.info("Resetting sequence number of batch with current sequence {} for partition {} to {}",
+                this.baseSequence(), this.topicPartition, baseSequence);
         reopened = true;
         recordsBuilder.reopenAndRewriteProducerState(producerIdAndEpoch.producerId, producerIdAndEpoch.epoch, baseSequence, isTransactional);
     }
@@ -442,6 +457,10 @@ public final class ProducerBatch {
 
     public int baseSequence() {
         return recordsBuilder.baseSequence();
+    }
+
+    public int lastSequence() {
+        return recordsBuilder.baseSequence() + recordsBuilder.numRecords() - 1;
     }
 
     public boolean hasSequence() {

@@ -24,6 +24,7 @@ import org.apache.kafka.streams.kstream.Initializer;
 import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Merger;
+import org.apache.kafka.streams.kstream.Named;
 import org.apache.kafka.streams.kstream.Reducer;
 import org.apache.kafka.streams.kstream.SessionWindowedKStream;
 import org.apache.kafka.streams.kstream.SessionWindows;
@@ -35,6 +36,7 @@ import org.apache.kafka.streams.state.SessionStore;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
 
+import java.time.Duration;
 import java.util.Objects;
 import java.util.Set;
 
@@ -48,13 +50,13 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
 
     SessionWindowedKStreamImpl(final SessionWindows windows,
                                final InternalStreamsBuilder builder,
-                               final Set<String> sourceNodes,
+                               final Set<String> subTopologySourceNodes,
                                final String name,
                                final Serde<K> keySerde,
                                final Serde<V> valSerde,
                                final GroupedStreamAggregateBuilder<K, V> aggregateBuilder,
                                final StreamsGraphNode streamsGraphNode) {
-        super(name, keySerde, valSerde, sourceNodes, streamsGraphNode, builder);
+        super(name, keySerde, valSerde, subTopologySourceNodes, streamsGraphNode, builder);
         Objects.requireNonNull(windows, "windows can't be null");
         this.windows = windows;
         this.aggregateBuilder = aggregateBuilder;
@@ -62,11 +64,21 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
 
     @Override
     public KTable<Windowed<K>, Long> count() {
-        return doCount(Materialized.with(keySerde, Serdes.Long()));
+        return count(NamedInternal.empty());
+    }
+
+    @Override
+    public KTable<Windowed<K>, Long> count(final Named named) {
+        return doCount(named, Materialized.with(keySerde, Serdes.Long()));
     }
 
     @Override
     public KTable<Windowed<K>, Long> count(final Materialized<K, Long, SessionStore<Bytes, byte[]>> materialized) {
+        return count(NamedInternal.empty(), materialized);
+    }
+
+    @Override
+    public KTable<Windowed<K>, Long> count(final Named named, final Materialized<K, Long, SessionStore<Bytes, byte[]>> materialized) {
         Objects.requireNonNull(materialized, "materialized can't be null");
 
         // TODO: remove this when we do a topology-incompatible release
@@ -75,12 +87,14 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
             builder.newStoreName(AGGREGATE_NAME);
         }
 
-        return doCount(materialized);
+        return doCount(named, materialized);
     }
 
-    private KTable<Windowed<K>, Long> doCount(final Materialized<K, Long, SessionStore<Bytes, byte[]>> materialized) {
-        final MaterializedInternal<K, Long, SessionStore<Bytes, byte[]>> materializedInternal = new MaterializedInternal<>(materialized);
-        materializedInternal.generateStoreNameIfNeeded(builder, AGGREGATE_NAME);
+    private KTable<Windowed<K>, Long> doCount(final Named named,
+                                              final Materialized<K, Long, SessionStore<Bytes, byte[]>> materialized) {
+        final MaterializedInternal<K, Long, SessionStore<Bytes, byte[]>> materializedInternal =
+            new MaterializedInternal<>(materialized, builder, AGGREGATE_NAME);
+
         if (materializedInternal.keySerde() == null) {
             materializedInternal.withKeySerde(keySerde);
         }
@@ -88,8 +102,9 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
             materializedInternal.withValueSerde(Serdes.Long());
         }
 
+        final String aggregateName = new NamedInternal(named).orElseGenerateWithPrefix(builder, AGGREGATE_NAME);
         return aggregateBuilder.build(
-            AGGREGATE_NAME,
+            new NamedInternal(aggregateName),
             materialize(materializedInternal),
             new KStreamSessionWindowAggregate<>(
                 windows,
@@ -97,24 +112,37 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
                 aggregateBuilder.countInitializer,
                 aggregateBuilder.countAggregator,
                 countMerger),
-            materializedInternal.isQueryable(),
+            materializedInternal.queryableStoreName(),
             materializedInternal.keySerde() != null ? new WindowedSerdes.SessionWindowedSerde<>(materializedInternal.keySerde()) : null,
             materializedInternal.valueSerde());
     }
 
     @Override
     public KTable<Windowed<K>, V> reduce(final Reducer<V> reducer) {
-        return reduce(reducer, Materialized.with(keySerde, valSerde));
+        return reduce(reducer, NamedInternal.empty());
+    }
+
+    @Override
+    public KTable<Windowed<K>, V> reduce(final Reducer<V> reducer, final Named named) {
+        return reduce(reducer, named, Materialized.with(keySerde, valSerde));
     }
 
     @Override
     public KTable<Windowed<K>, V> reduce(final Reducer<V> reducer,
                                          final Materialized<K, V, SessionStore<Bytes, byte[]>> materialized) {
+        return reduce(reducer, NamedInternal.empty(), materialized);
+    }
+
+    @Override
+    public KTable<Windowed<K>, V> reduce(final Reducer<V> reducer,
+                                         final Named named,
+                                         final Materialized<K, V, SessionStore<Bytes, byte[]>> materialized) {
         Objects.requireNonNull(reducer, "reducer can't be null");
+        Objects.requireNonNull(named, "named can't be null");
         Objects.requireNonNull(materialized, "materialized can't be null");
         final Aggregator<K, V, V> reduceAggregator = aggregatorForReducer(reducer);
-        final MaterializedInternal<K, V, SessionStore<Bytes, byte[]>> materializedInternal = new MaterializedInternal<>(materialized);
-        materializedInternal.generateStoreNameIfNeeded(builder, REDUCE_NAME);
+        final MaterializedInternal<K, V, SessionStore<Bytes, byte[]>> materializedInternal =
+            new MaterializedInternal<>(materialized, builder, REDUCE_NAME);
         if (materializedInternal.keySerde() == null) {
             materializedInternal.withKeySerde(keySerde);
         }
@@ -122,8 +150,9 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
             materializedInternal.withValueSerde(valSerde);
         }
 
+        final String reduceName = new NamedInternal(named).orElseGenerateWithPrefix(builder, REDUCE_NAME);
         return aggregateBuilder.build(
-            REDUCE_NAME,
+            new NamedInternal(reduceName),
             materialize(materializedInternal),
             new KStreamSessionWindowAggregate<>(
                 windows,
@@ -132,7 +161,7 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
                 reduceAggregator,
                 mergerForAggregator(reduceAggregator)
             ),
-            materializedInternal.isQueryable(),
+            materializedInternal.queryableStoreName(),
             materializedInternal.keySerde() != null ? new WindowedSerdes.SessionWindowedSerde<>(materializedInternal.keySerde()) : null,
             materializedInternal.valueSerde());
     }
@@ -141,7 +170,15 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
     public <T> KTable<Windowed<K>, T> aggregate(final Initializer<T> initializer,
                                                 final Aggregator<? super K, ? super V, T> aggregator,
                                                 final Merger<? super K, T> sessionMerger) {
-        return aggregate(initializer, aggregator, sessionMerger, Materialized.with(keySerde, null));
+        return aggregate(initializer, aggregator, sessionMerger, NamedInternal.empty());
+    }
+
+    @Override
+    public <T> KTable<Windowed<K>, T> aggregate(final Initializer<T> initializer,
+                                                final Aggregator<? super K, ? super V, T> aggregator,
+                                                final Merger<? super K, T> sessionMerger,
+                                                final Named named) {
+        return aggregate(initializer, aggregator, sessionMerger, named, Materialized.with(keySerde, null));
     }
 
     @Override
@@ -149,19 +186,30 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
                                                   final Aggregator<? super K, ? super V, VR> aggregator,
                                                   final Merger<? super K, VR> sessionMerger,
                                                   final Materialized<K, VR, SessionStore<Bytes, byte[]>> materialized) {
+        return aggregate(initializer, aggregator, sessionMerger, NamedInternal.empty(), materialized);
+    }
+
+    @Override
+    public <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+                                                  final Aggregator<? super K, ? super V, VR> aggregator,
+                                                  final Merger<? super K, VR> sessionMerger,
+                                                  final Named named,
+                                                  final Materialized<K, VR, SessionStore<Bytes, byte[]>> materialized) {
         Objects.requireNonNull(initializer, "initializer can't be null");
         Objects.requireNonNull(aggregator, "aggregator can't be null");
         Objects.requireNonNull(sessionMerger, "sessionMerger can't be null");
         Objects.requireNonNull(materialized, "materialized can't be null");
-        final MaterializedInternal<K, VR, SessionStore<Bytes, byte[]>> materializedInternal = new MaterializedInternal<>(materialized);
-        materializedInternal.generateStoreNameIfNeeded(builder, AGGREGATE_NAME);
+        final MaterializedInternal<K, VR, SessionStore<Bytes, byte[]>> materializedInternal =
+            new MaterializedInternal<>(materialized, builder, AGGREGATE_NAME);
 
         if (materializedInternal.keySerde() == null) {
             materializedInternal.withKeySerde(keySerde);
         }
 
+        final String aggregateName = new NamedInternal(named).orElseGenerateWithPrefix(builder, AGGREGATE_NAME);
+
         return aggregateBuilder.build(
-            AGGREGATE_NAME,
+            new NamedInternal(aggregateName),
             materialize(materializedInternal),
             new KStreamSessionWindowAggregate<>(
                 windows,
@@ -169,7 +217,7 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
                 initializer,
                 aggregator,
                 sessionMerger),
-            materializedInternal.isQueryable(),
+            materializedInternal.queryableStoreName(),
             materializedInternal.keySerde() != null ? new WindowedSerdes.SessionWindowedSerde<>(materializedInternal.keySerde()) : null,
             materializedInternal.valueSerde());
     }
@@ -193,7 +241,7 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
             }
             supplier = Stores.persistentSessionStore(
                 materialized.storeName(),
-                retentionPeriod
+                Duration.ofMillis(retentionPeriod)
             );
         }
         final StoreBuilder<SessionStore<K, VR>> builder = Stores.sessionStoreBuilder(

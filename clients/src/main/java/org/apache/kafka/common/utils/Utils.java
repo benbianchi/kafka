@@ -16,6 +16,9 @@
  */
 package org.apache.kafka.common.utils;
 
+import java.util.EnumSet;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import org.apache.kafka.common.KafkaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,19 +34,18 @@ import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
-import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -53,12 +55,21 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.BinaryOperator;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public final class Utils {
 
@@ -71,7 +82,8 @@ public final class Utils {
     private static final Pattern VALID_HOST_CHARACTERS = Pattern.compile("([0-9a-zA-Z\\-%._:]*)");
 
     // Prints up to 2 decimal digits. Used for human readable printing
-    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##");
+    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##",
+        DecimalFormatSymbols.getInstance(Locale.ENGLISH));
 
     private static final String[] BYTE_SCALE_SUFFIXES = new String[] {"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
 
@@ -272,17 +284,12 @@ public final class Utils {
     }
 
     /**
-     * Check that the parameter t is not null
-     *
-     * @param t The object to check
-     * @return t if it isn't null
-     * @throws NullPointerException if t is null.
+     * Returns a copy of src byte array
+     * @param src The byte array to copy
+     * @return The copy
      */
-    public static <T> T notNull(T t) {
-        if (t == null)
-            throw new NullPointerException();
-        else
-            return t;
+    public static byte[] copyArray(byte[] src) {
+        return Arrays.copyOf(src, src.length);
     }
 
     /**
@@ -377,6 +384,7 @@ public final class Utils {
      * @param data byte array to hash
      * @return 32 bit hash of the given array
      */
+    @SuppressWarnings("fallthrough")
     public static int murmur2(final byte[] data) {
         int length = data.length;
         int seed = 0x9747b28c;
@@ -552,8 +560,19 @@ public final class Utils {
     /**
      * Read a properties file from the given path
      * @param filename The path of the file to read
+     * @return the loaded properties
      */
     public static Properties loadProps(String filename) throws IOException {
+        return loadProps(filename, null);
+    }
+
+    /**
+     * Read a properties file from the given path
+     * @param filename The path of the file to read
+     * @param onlyIncludeKeys When non-null, only return values associated with these keys and ignore all others
+     * @return the loaded properties
+     */
+    public static Properties loadProps(String filename, List<String> onlyIncludeKeys) throws IOException {
         Properties props = new Properties();
 
         if (filename != null) {
@@ -564,7 +583,15 @@ public final class Utils {
             System.out.println("Did not load any properties since the property file is not specified");
         }
 
-        return props;
+        if (onlyIncludeKeys == null || onlyIncludeKeys.isEmpty())
+            return props;
+        Properties requestedProps = new Properties();
+        onlyIncludeKeys.forEach(key -> {
+            String value = props.getProperty(key);
+            if (value != null)
+                requestedProps.setProperty(key, value);
+        });
+        return requestedProps;
     }
 
     /**
@@ -589,15 +616,6 @@ public final class Utils {
     }
 
     /**
-     * Print an error message and shutdown the JVM
-     * @param message The error message
-     */
-    public static void croak(String message) {
-        System.err.println(message);
-        Exit.exit(1);
-    }
-
-    /**
      * Read a buffer into a Byte array for the given offset and length
      */
     public static byte[] readBytes(ByteBuffer buffer, int offset, int length) {
@@ -607,7 +625,7 @@ public final class Utils {
         } else {
             buffer.mark();
             buffer.position(offset);
-            buffer.get(dest, 0, length);
+            buffer.get(dest);
             buffer.reset();
         }
         return dest;
@@ -621,21 +639,16 @@ public final class Utils {
     }
 
     /**
-     * Attempt to read a file as a string
-     * @throws IOException
+     * Read a file as string and return the content. The file is treated as a stream and no seek is performed.
+     * This allows the program to read from a regular file as well as from a pipe/fifo.
      */
-    public static String readFileAsString(String path, Charset charset) throws IOException {
-        if (charset == null) charset = Charset.defaultCharset();
-
-        try (FileChannel fc = FileChannel.open(Paths.get(path))) {
-            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
-            return charset.decode(bb).toString();
-        }
-
-    }
-
     public static String readFileAsString(String path) throws IOException {
-        return Utils.readFileAsString(path, Charset.defaultCharset());
+        try {
+            byte[] allBytes = Files.readAllBytes(Paths.get(path));
+            return new String(allBytes, StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            throw new IOException("Unable to read file " + path, ex);
+        }
     }
 
     /**
@@ -654,7 +667,7 @@ public final class Utils {
         return existingBuffer;
     }
 
-    /*
+    /**
      * Creates a set
      * @param elems the elements
      * @param <T> the type of element
@@ -662,18 +675,24 @@ public final class Utils {
      */
     @SafeVarargs
     public static <T> Set<T> mkSet(T... elems) {
-        return new HashSet<>(Arrays.asList(elems));
+        Set<T> result = new HashSet<>((int) (elems.length / 0.75) + 1);
+        for (T elem : elems)
+            result.add(elem);
+        return result;
     }
 
-    /*
-     * Creates a list
+    /**
+     * Creates a sorted set
      * @param elems the elements
-     * @param <T> the type of element
-     * @return List
+     * @param <T> the type of element, must be comparable
+     * @return SortedSet
      */
     @SafeVarargs
-    public static <T> List<T> mkList(T... elems) {
-        return Arrays.asList(elems);
+    public static <T extends Comparable<T>> SortedSet<T> mkSortedSet(T... elems) {
+        SortedSet<T> result = new TreeSet<>();
+        for (T elem : elems)
+            result.add(elem);
+        return result;
     }
 
     /**
@@ -738,29 +757,56 @@ public final class Utils {
     /**
      * Recursively delete the given file/directory and any subfiles (if any exist)
      *
-     * @param file The root file at which to begin deleting
+     * @param rootFile The root file at which to begin deleting
      */
-    public static void delete(final File file) throws IOException {
-        if (file == null)
+    public static void delete(final File rootFile) throws IOException {
+        delete(rootFile, Collections.emptyList());
+    }
+
+    /**
+     * Recursively delete the subfiles (if any exist) of the passed in root file that are not included
+     * in the list to keep
+     *
+     * @param rootFile The root file at which to begin deleting
+     * @param filesToKeep The subfiles to keep (note that if a subfile is to be kept, so are all its parent
+     *                    files in its pat)h; if empty we would also delete the root file
+     */
+    public static void delete(final File rootFile, final List<File> filesToKeep) throws IOException {
+        if (rootFile == null)
             return;
-        Files.walkFileTree(file.toPath(), new SimpleFileVisitor<Path>() {
+        Files.walkFileTree(rootFile.toPath(), new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFileFailed(Path path, IOException exc) throws IOException {
                 // If the root path did not exist, ignore the error; otherwise throw it.
-                if (exc instanceof NoSuchFileException && path.toFile().equals(file))
+                if (exc instanceof NoSuchFileException && path.toFile().equals(rootFile))
                     return FileVisitResult.TERMINATE;
                 throw exc;
             }
 
             @Override
             public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) throws IOException {
-                Files.delete(path);
+                if (!filesToKeep.contains(path.toFile())) {
+                    Files.delete(path);
+                }
                 return FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult postVisitDirectory(Path path, IOException exc) throws IOException {
-                Files.delete(path);
+                // KAFKA-8999: if there's an exception thrown previously already, we should throw it
+                if (exc != null) {
+                    throw exc;
+                }
+
+                if (rootFile.toPath().equals(path)) {
+                    // only delete the parent directory if there's nothing to keep
+                    if (filesToKeep.isEmpty()) {
+                        Files.delete(path);
+                    }
+                } else if (!filesToKeep.contains(path.toFile())) {
+                    Files.delete(path);
+                }
+
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -852,6 +898,17 @@ public final class Utils {
         }
     }
 
+    public static void closeQuietly(AutoCloseable closeable, String name, AtomicReference<Throwable> firstException) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (Throwable t) {
+                firstException.compareAndSet(null, t);
+                log.error("Failed to close {} with type {}", name, closeable.getClass().getName(), t);
+            }
+        }
+    }
+
     /**
      * A cheap way to deterministically convert a number to a positive value. When the input is
      * positive, the original value is returned. When the input number is negative, the returned
@@ -867,10 +924,6 @@ public final class Utils {
      */
     public static int toPositive(int number) {
         return number & 0x7fffffff;
-    }
-
-    public static int longHashcode(long value) {
-        return (int) (value ^ (value >>> 32));
     }
 
     /**
@@ -1000,4 +1053,97 @@ public final class Utils {
         return res;
     }
 
+    public static <T> List<T> concatListsUnmodifiable(List<T> left, List<T> right) {
+        return concatLists(left, right, Collections::unmodifiableList);
+    }
+
+    public static <T> List<T> concatLists(List<T> left, List<T> right, Function<List<T>, List<T>> finisher) {
+        return Stream.concat(left.stream(), right.stream())
+                .collect(Collectors.collectingAndThen(Collectors.toList(), finisher));
+    }
+
+    public static int to32BitField(final Set<Byte> bytes) {
+        int value = 0;
+        for (final byte b : bytes)
+            value |= 1 << checkRange(b);
+        return value;
+    }
+
+    private static byte checkRange(final byte i) {
+        if (i > 31)
+            throw new IllegalArgumentException("out of range: i>31, i = " + i);
+        if (i < 0)
+            throw new IllegalArgumentException("out of range: i<0, i = " + i);
+        return i;
+    }
+
+    public static Set<Byte> from32BitField(final int intValue) {
+        Set<Byte> result = new HashSet<>();
+        for (int itr = intValue, count = 0; itr != 0; itr >>>= 1) {
+            if ((itr & 1) != 0)
+                result.add((byte) count);
+            count++;
+        }
+        return result;
+    }
+
+    public static <K1, V1, K2, V2> Map<K2, V2> transformMap(
+            Map<? extends K1, ? extends V1> map,
+            Function<K1, K2> keyMapper,
+            Function<V1, V2> valueMapper) {
+        return map.entrySet().stream().collect(
+            Collectors.toMap(
+                entry -> keyMapper.apply(entry.getKey()),
+                entry -> valueMapper.apply(entry.getValue())
+            )
+        );
+    }
+
+    /**
+     * A Collector that offers two kinds of convenience:
+     * 1. You can specify the concrete type of the returned Map
+     * 2. You can turn a stream of Entries directly into a Map without having to mess with a key function
+     *    and a value function. In particular, this is handy if all you need to do is apply a filter to a Map's entries.
+     *
+     *
+     * One thing to be wary of: These types are too "distant" for IDE type checkers to warn you if you
+     * try to do something like build a TreeMap of non-Comparable elements. You'd get a runtime exception for that.
+     *
+     * @param mapSupplier The constructor for your concrete map type.
+     * @param <K> The Map key type
+     * @param <V> The Map value type
+     * @param <M> The type of the Map itself.
+     * @return new Collector<Map.Entry<K, V>, M, M>
+     */
+    public static <K, V, M extends Map<K, V>> Collector<Map.Entry<K, V>, M, M> entriesToMap(final Supplier<M> mapSupplier) {
+        return new Collector<Map.Entry<K, V>, M, M>() {
+            @Override
+            public Supplier<M> supplier() {
+                return mapSupplier;
+            }
+
+            @Override
+            public BiConsumer<M, Map.Entry<K, V>> accumulator() {
+                return (map, entry) -> map.put(entry.getKey(), entry.getValue());
+            }
+
+            @Override
+            public BinaryOperator<M> combiner() {
+                return (map, map2) -> {
+                    map.putAll(map2);
+                    return map;
+                };
+            }
+
+            @Override
+            public Function<M, M> finisher() {
+                return map -> map;
+            }
+
+            @Override
+            public Set<Characteristics> characteristics() {
+                return EnumSet.of(Characteristics.UNORDERED, Characteristics.IDENTITY_FINISH);
+            }
+        };
+    }
 }

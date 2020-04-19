@@ -38,6 +38,7 @@ import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.Produced;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.streams.processor.internals.DefaultKafkaClientSupplier;
+import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.MockProcessorSupplier;
@@ -60,12 +61,14 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 /**
  * End-to-end integration test based on using regex and named topics for creating sources, using
@@ -89,11 +92,12 @@ public class RegexSourceIntegrationTest {
     private static final String PARTITIONED_TOPIC_1 = "partitioned-1";
     private static final String PARTITIONED_TOPIC_2 = "partitioned-2";
 
-    private static final String DEFAULT_OUTPUT_TOPIC = "outputTopic";
     private static final String STRING_SERDE_CLASSNAME = Serdes.String().getClass().getName();
     private Properties streamsConfiguration;
     private static final String STREAM_TASKS_NOT_UPDATED = "Stream tasks not updated";
     private KafkaStreams streams;
+    private static volatile AtomicInteger topicSuffixGenerator = new AtomicInteger(0);
+    private String outputTopic;
 
 
     @BeforeClass
@@ -106,22 +110,19 @@ public class RegexSourceIntegrationTest {
             TOPIC_Y,
             TOPIC_Z,
             FA_TOPIC,
-            FOO_TOPIC,
-            DEFAULT_OUTPUT_TOPIC);
+            FOO_TOPIC);
         CLUSTER.createTopic(PARTITIONED_TOPIC_1, 2, 1);
         CLUSTER.createTopic(PARTITIONED_TOPIC_2, 2, 1);
     }
 
     @Before
-    public void setUp() throws Exception {
-        CLUSTER.deleteAndRecreateTopics(DEFAULT_OUTPUT_TOPIC);
-
+    public void setUp() throws InterruptedException {
+        outputTopic = createTopic(topicSuffixGenerator.incrementAndGet());
         final Properties properties = new Properties();
         properties.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
         properties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
         properties.put(ConsumerConfig.METADATA_MAX_AGE_CONFIG, "1000");
         properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        properties.put(IntegrationTestUtils.INTERNAL_LEAVE_GROUP_ON_CLOSE, true);
 
         streamsConfiguration = StreamsTestUtils.getStreamsConfig("regex-source-integration-test",
                                                                  CLUSTER.bootstrapServers(),
@@ -143,7 +144,11 @@ public class RegexSourceIntegrationTest {
     public void testRegexMatchesTopicsAWhenCreated() throws Exception {
 
         final Serde<String> stringSerde = Serdes.String();
-        final List<String> expectedFirstAssignment = Arrays.asList("TEST-TOPIC-1");
+
+        final List<String> expectedFirstAssignment = Collections.singletonList("TEST-TOPIC-1");
+        // we compare lists of subscribed topics and hence requiring the order as well; this is guaranteed
+        // with KIP-429 since we would NOT revoke TEST-TOPIC-1 but only add TEST-TOPIC-2 so the list is always
+        // in the order of "TEST-TOPIC-1, TEST-TOPIC-2". Note if KIP-429 behavior ever changed it may become a flaky test
         final List<String> expectedSecondAssignment = Arrays.asList("TEST-TOPIC-1", "TEST-TOPIC-2");
 
         CLUSTER.createTopic("TEST-TOPIC-1");
@@ -152,8 +157,8 @@ public class RegexSourceIntegrationTest {
 
         final KStream<String, String> pattern1Stream = builder.stream(Pattern.compile("TEST-TOPIC-\\d"));
 
-        pattern1Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
-        final List<String> assignedTopics = new ArrayList<>();
+        pattern1Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
+        final List<String> assignedTopics = new CopyOnWriteArrayList<>();
         streams = new KafkaStreams(builder.build(), streamsConfiguration, new DefaultKafkaClientSupplier() {
             @Override
             public Consumer<byte[], byte[]> getConsumer(final Map<String, Object> config) {
@@ -167,24 +172,19 @@ public class RegexSourceIntegrationTest {
             }
         });
 
-
         streams.start();
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return assignedTopics.equals(expectedFirstAssignment);
-            }
-        }, STREAM_TASKS_NOT_UPDATED);
+        TestUtils.waitForCondition(() -> assignedTopics.equals(expectedFirstAssignment), STREAM_TASKS_NOT_UPDATED);
 
         CLUSTER.createTopic("TEST-TOPIC-2");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return assignedTopics.equals(expectedSecondAssignment);
-            }
-        }, STREAM_TASKS_NOT_UPDATED);
+        TestUtils.waitForCondition(() -> assignedTopics.equals(expectedSecondAssignment), STREAM_TASKS_NOT_UPDATED);
 
+    }
+
+    private String createTopic(final int suffix) throws InterruptedException {
+        final String outputTopic = "outputTopic_" + suffix;
+        CLUSTER.createTopic(outputTopic);
+        return outputTopic;
     }
 
     @Test
@@ -192,7 +192,7 @@ public class RegexSourceIntegrationTest {
 
         final Serde<String> stringSerde = Serdes.String();
         final List<String> expectedFirstAssignment = Arrays.asList("TEST-TOPIC-A", "TEST-TOPIC-B");
-        final List<String> expectedSecondAssignment = Arrays.asList("TEST-TOPIC-B");
+        final List<String> expectedSecondAssignment = Collections.singletonList("TEST-TOPIC-B");
 
         CLUSTER.createTopics("TEST-TOPIC-A", "TEST-TOPIC-B");
 
@@ -200,9 +200,9 @@ public class RegexSourceIntegrationTest {
 
         final KStream<String, String> pattern1Stream = builder.stream(Pattern.compile("TEST-TOPIC-[A-Z]"));
 
-        pattern1Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
+        pattern1Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
 
-        final List<String> assignedTopics = new ArrayList<>();
+        final List<String> assignedTopics = new CopyOnWriteArrayList<>();
         streams = new KafkaStreams(builder.build(), streamsConfiguration, new DefaultKafkaClientSupplier() {
             @Override
             public Consumer<byte[], byte[]> getConsumer(final Map<String, Object> config) {
@@ -212,34 +212,23 @@ public class RegexSourceIntegrationTest {
                         super.subscribe(topics, new TheConsumerRebalanceListener(assignedTopics, listener));
                     }
                 };
-
             }
         });
 
 
         streams.start();
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return assignedTopics.equals(expectedFirstAssignment);
-            }
-        }, STREAM_TASKS_NOT_UPDATED);
+        TestUtils.waitForCondition(() -> assignedTopics.equals(expectedFirstAssignment), STREAM_TASKS_NOT_UPDATED);
 
         CLUSTER.deleteTopic("TEST-TOPIC-A");
 
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                return assignedTopics.equals(expectedSecondAssignment);
-            }
-        }, STREAM_TASKS_NOT_UPDATED);
+        TestUtils.waitForCondition(() -> assignedTopics.equals(expectedSecondAssignment), STREAM_TASKS_NOT_UPDATED);
     }
 
     @Test
     public void shouldAddStateStoreToRegexDefinedSource() throws InterruptedException {
 
         final ProcessorSupplier<String, String> processorSupplier = new MockProcessorSupplier<>();
-        final StoreBuilder storeBuilder = new MockKeyValueStoreBuilder("testStateStore", false);
+        final StoreBuilder<KeyValueStore<Object, Object>> storeBuilder = new MockKeyValueStoreBuilder("testStateStore", false);
         final long thirtySecondTimeout = 30 * 1000;
 
         final TopologyWrapper topology = new TopologyWrapper();
@@ -252,13 +241,10 @@ public class RegexSourceIntegrationTest {
         try {
             streams.start();
 
-            final TestCondition stateStoreNameBoundToSourceTopic = new TestCondition() {
-                @Override
-                public boolean conditionMet() {
-                    final Map<String, List<String>> stateStoreToSourceTopic = topology.getInternalBuilder().stateStoreNameToSourceTopics();
-                    final List<String> topicNamesList = stateStoreToSourceTopic.get("testStateStore");
-                    return topicNamesList != null && !topicNamesList.isEmpty() && topicNamesList.get(0).equals("topic-1");
-                }
+            final TestCondition stateStoreNameBoundToSourceTopic = () -> {
+                final Map<String, List<String>> stateStoreToSourceTopic = topology.getInternalBuilder().stateStoreNameToSourceTopics();
+                final List<String> topicNamesList = stateStoreToSourceTopic.get("testStateStore");
+                return topicNamesList != null && !topicNamesList.isEmpty() && topicNamesList.get(0).equals("topic-1");
             };
 
             TestUtils.waitForCondition(stateStoreNameBoundToSourceTopic, thirtySecondTimeout, "Did not find topic: [topic-1] connected to state store: [testStateStore]");
@@ -287,26 +273,26 @@ public class RegexSourceIntegrationTest {
         final KStream<String, String> pattern2Stream = builder.stream(Pattern.compile("topic-[A-D]"));
         final KStream<String, String> namedTopicsStream = builder.stream(Arrays.asList(TOPIC_Y, TOPIC_Z));
 
-        pattern1Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
-        pattern2Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
-        namedTopicsStream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
+        pattern1Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
+        pattern2Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
+        namedTopicsStream.to(outputTopic, Produced.with(stringSerde, stringSerde));
 
         streams = new KafkaStreams(builder.build(), streamsConfiguration);
         streams.start();
 
         final Properties producerConfig = TestUtils.producerConfig(CLUSTER.bootstrapServers(), StringSerializer.class, StringSerializer.class);
 
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_1, Arrays.asList(topic1TestMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_2, Arrays.asList(topic2TestMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_A, Arrays.asList(topicATestMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_C, Arrays.asList(topicCTestMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_Y, Arrays.asList(topicYTestMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(TOPIC_Z, Arrays.asList(topicZTestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_1, Collections.singleton(topic1TestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_2, Collections.singleton(topic2TestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_A, Collections.singleton(topicATestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_C, Collections.singleton(topicCTestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_Y, Collections.singleton(topicYTestMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(TOPIC_Z, Collections.singleton(topicZTestMessage), producerConfig, mockTime);
 
         final Properties consumerConfig = TestUtils.consumerConfig(CLUSTER.bootstrapServers(), StringDeserializer.class, StringDeserializer.class);
 
         final List<String> expectedReceivedValues = Arrays.asList(topicATestMessage, topic1TestMessage, topic2TestMessage, topicCTestMessage, topicYTestMessage, topicZTestMessage);
-        final List<KeyValue<String, String>> receivedKeyValues = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(consumerConfig, DEFAULT_OUTPUT_TOPIC, 6);
+        final List<KeyValue<String, String>> receivedKeyValues = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(consumerConfig, outputTopic, 6);
         final List<String> actualValues = new ArrayList<>(6);
 
         for (final KeyValue<String, String> receivedKeyValue : receivedKeyValues) {
@@ -333,11 +319,11 @@ public class RegexSourceIntegrationTest {
             final KStream<String, String> partitionedStreamFollower = builderFollower.stream(Pattern.compile("partitioned-\\d"));
 
 
-            partitionedStreamLeader.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
-            partitionedStreamFollower.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
+            partitionedStreamLeader.to(outputTopic, Produced.with(stringSerde, stringSerde));
+            partitionedStreamFollower.to(outputTopic, Produced.with(stringSerde, stringSerde));
 
-            final List<String> leaderAssignment = new ArrayList<>();
-            final List<String> followerAssignment = new ArrayList<>();
+            final List<String> leaderAssignment = new CopyOnWriteArrayList<>();
+            final List<String> followerAssignment = new CopyOnWriteArrayList<>();
 
             partitionedStreamsLeader  = new KafkaStreams(builderLeader.build(), streamsConfiguration, new DefaultKafkaClientSupplier() {
                 @Override
@@ -364,15 +350,9 @@ public class RegexSourceIntegrationTest {
                 }
             });
 
-
             partitionedStreamsLeader.start();
             partitionedStreamsFollower.start();
-            TestUtils.waitForCondition(new TestCondition() {
-                @Override
-                public boolean conditionMet() {
-                    return followerAssignment.equals(expectedAssignment) && leaderAssignment.equals(expectedAssignment);
-                }
-            }, "topic assignment not completed");
+            TestUtils.waitForCondition(() -> followerAssignment.equals(expectedAssignment) && leaderAssignment.equals(expectedAssignment), "topic assignment not completed");
         } finally {
             if (partitionedStreamsLeader != null) {
                 partitionedStreamsLeader.close();
@@ -386,6 +366,7 @@ public class RegexSourceIntegrationTest {
 
     @Test
     public void testNoMessagesSentExceptionFromOverlappingPatterns() throws Exception {
+
         final String fMessage = "fMessage";
         final String fooMessage = "fooMessage";
         final Serde<String> stringSerde = Serdes.String();
@@ -396,29 +377,27 @@ public class RegexSourceIntegrationTest {
         final KStream<String, String> pattern1Stream = builder.stream(Pattern.compile("foo.*"));
         final KStream<String, String> pattern2Stream = builder.stream(Pattern.compile("f.*"));
 
-        pattern1Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
-        pattern2Stream.to(DEFAULT_OUTPUT_TOPIC, Produced.with(stringSerde, stringSerde));
+        pattern1Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
+        pattern2Stream.to(outputTopic, Produced.with(stringSerde, stringSerde));
 
         final AtomicBoolean expectError = new AtomicBoolean(false);
 
         streams = new KafkaStreams(builder.build(), streamsConfiguration);
-        streams.setStateListener(new KafkaStreams.StateListener() {
-            @Override
-            public void onChange(final KafkaStreams.State newState, final KafkaStreams.State oldState) {
-                if (newState == KafkaStreams.State.ERROR)
-                    expectError.set(true);
+        streams.setStateListener((newState, oldState) -> {
+            if (newState == KafkaStreams.State.ERROR) {
+                expectError.set(true);
             }
         });
         streams.start();
 
         final Properties producerConfig = TestUtils.producerConfig(CLUSTER.bootstrapServers(), StringSerializer.class, StringSerializer.class);
 
-        IntegrationTestUtils.produceValuesSynchronously(FA_TOPIC, Arrays.asList(fMessage), producerConfig, mockTime);
-        IntegrationTestUtils.produceValuesSynchronously(FOO_TOPIC, Arrays.asList(fooMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(FA_TOPIC, Collections.singleton(fMessage), producerConfig, mockTime);
+        IntegrationTestUtils.produceValuesSynchronously(FOO_TOPIC, Collections.singleton(fooMessage), producerConfig, mockTime);
 
         final Properties consumerConfig = TestUtils.consumerConfig(CLUSTER.bootstrapServers(), StringDeserializer.class, StringDeserializer.class);
         try {
-            IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(consumerConfig, DEFAULT_OUTPUT_TOPIC, 2, 5000);
+            IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(consumerConfig, outputTopic, 2, 5000);
             throw new IllegalStateException("This should not happen: an assertion error should have been thrown before this.");
         } catch (final AssertionError e) {
             // this is fine
@@ -438,7 +417,9 @@ public class RegexSourceIntegrationTest {
 
         @Override
         public void onPartitionsRevoked(final Collection<TopicPartition> partitions) {
-            assignedTopics.clear();
+            for (final TopicPartition partition : partitions) {
+                assignedTopics.remove(partition.topic());
+            }
             listener.onPartitionsRevoked(partitions);
         }
 

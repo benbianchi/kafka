@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.streams.tests;
 
+import java.time.Duration;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -30,7 +31,6 @@ import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.KStream;
 
 import java.util.Properties;
-import java.util.concurrent.TimeUnit;
 
 public class ShutdownDeadlockTest {
 
@@ -62,12 +62,7 @@ public class ShutdownDeadlockTest {
             }
         });
 
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                streams.close(5, TimeUnit.SECONDS);
-            }
-        }));
+        Exit.addShutdownHook("streams-shutdown-hook", () -> streams.close(Duration.ofSeconds(5)));
 
         final Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "SmokeTest");

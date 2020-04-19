@@ -21,14 +21,23 @@ package org.apache.kafka.streams.scala.kstream
 import org.apache.kafka.streams.scala.Serdes
 import org.apache.kafka.streams.scala.Serdes._
 import org.junit.runner.RunWith
-import org.scalatest.junit.JUnitRunner
 import org.scalatest.{FlatSpec, Matchers}
+import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
 class JoinedTest extends FlatSpec with Matchers {
 
   "Create a Joined" should "create a Joined with Serdes" in {
     val joined: Joined[String, Long, Int] = Joined.`with`[String, Long, Int]
+
+    joined.keySerde.getClass shouldBe Serdes.String.getClass
+    joined.valueSerde.getClass shouldBe Serdes.Long.getClass
+    joined.otherValueSerde.getClass shouldBe Serdes.Integer.getClass
+  }
+
+  "Create a Joined" should "create a Joined with Serdes and repartition topic name" in {
+    val repartitionTopicName = "repartition-topic"
+    val joined: Joined[String, Long, Int] = Joined.`with`(repartitionTopicName)
 
     joined.keySerde.getClass shouldBe Serdes.String.getClass
     joined.valueSerde.getClass shouldBe Serdes.Long.getClass

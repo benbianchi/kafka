@@ -47,6 +47,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import static java.time.Duration.ofMillis;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
@@ -54,8 +55,8 @@ import static org.junit.Assert.fail;
 
 public class TopologyTest {
 
-    private final StoreBuilder storeBuilder = EasyMock.createNiceMock(StoreBuilder.class);
-    private final KeyValueStoreBuilder globalStoreBuilder = EasyMock.createNiceMock(KeyValueStoreBuilder.class);
+    private final StoreBuilder<MockKeyValueStore> storeBuilder = EasyMock.createNiceMock(StoreBuilder.class);
+    private final KeyValueStoreBuilder<?, ?> globalStoreBuilder = EasyMock.createNiceMock(KeyValueStoreBuilder.class);
     private final Topology topology = new Topology();
     private final InternalTopologyBuilder.TopologyDescription expectedDescription = new InternalTopologyBuilder.TopologyDescription();
 
@@ -86,7 +87,7 @@ public class TopologyTest {
 
     @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullNameWhenAddingProcessor() {
-        topology.addProcessor(null, () -> new MockProcessorSupplier().get());
+        topology.addProcessor(null, () -> new MockProcessorSupplier<>().get());
     }
 
     @Test(expected = NullPointerException.class)
@@ -168,9 +169,9 @@ public class TopologyTest {
     @Test
     public void shouldNotAllowToAddProcessorWithSameName() {
         topology.addSource("source", "topic-1");
-        topology.addProcessor("processor", new MockProcessorSupplier(), "source");
+        topology.addProcessor("processor", new MockProcessorSupplier<>(), "source");
         try {
-            topology.addProcessor("processor", new MockProcessorSupplier(), "source");
+            topology.addProcessor("processor", new MockProcessorSupplier<>(), "source");
             fail("Should throw TopologyException for duplicate processor name");
         } catch (final TopologyException expected) { }
     }
@@ -179,7 +180,7 @@ public class TopologyTest {
     public void shouldNotAllowToAddProcessorWithEmptyParents() {
         topology.addSource("source", "topic-1");
         try {
-            topology.addProcessor("processor", new MockProcessorSupplier());
+            topology.addProcessor("processor", new MockProcessorSupplier<>());
             fail("Should throw TopologyException for processor without at least one parent node");
         } catch (final TopologyException expected) { }
     }
@@ -188,19 +189,19 @@ public class TopologyTest {
     public void shouldNotAllowToAddProcessorWithNullParents() {
         topology.addSource("source", "topic-1");
         try {
-            topology.addProcessor("processor", new MockProcessorSupplier(), (String) null);
+            topology.addProcessor("processor", new MockProcessorSupplier<>(), (String) null);
             fail("Should throw NullPointerException for processor when null parent names are provided");
         } catch (final NullPointerException expected) { }
     }
 
     @Test(expected = TopologyException.class)
     public void shouldFailOnUnknownSource() {
-        topology.addProcessor("processor", new MockProcessorSupplier(), "source");
+        topology.addProcessor("processor", new MockProcessorSupplier<>(), "source");
     }
 
     @Test(expected = TopologyException.class)
     public void shouldFailIfNodeIsItsOwnParent() {
-        topology.addProcessor("processor", new MockProcessorSupplier(), "processor");
+        topology.addProcessor("processor", new MockProcessorSupplier<>(), "processor");
     }
 
     @Test
@@ -216,7 +217,7 @@ public class TopologyTest {
     @Test
     public void shouldNotAllowToAddSinkWithEmptyParents() {
         topology.addSource("source", "topic-1");
-        topology.addProcessor("processor", new MockProcessorSupplier(), "source");
+        topology.addProcessor("processor", new MockProcessorSupplier<>(), "source");
         try {
             topology.addSink("sink", "topic-2");
             fail("Should throw TopologyException for sink without at least one parent node");
@@ -226,7 +227,7 @@ public class TopologyTest {
     @Test
     public void shouldNotAllowToAddSinkWithNullParents() {
         topology.addSource("source", "topic-1");
-        topology.addProcessor("processor", new MockProcessorSupplier(), "source");
+        topology.addProcessor("processor", new MockProcessorSupplier<>(), "source");
         try {
             topology.addSink("sink", "topic-2", (String) null);
             fail("Should throw NullPointerException for sink when null parent names are provided");
@@ -257,7 +258,7 @@ public class TopologyTest {
     public void shouldNotAllowToAddStateStoreToNonExistingProcessor() {
         mockStoreBuilder();
         EasyMock.replay(storeBuilder);
-        topology.addStateStore(storeBuilder, "no-such-processsor");
+        topology.addStateStore(storeBuilder, "no-such-processor");
     }
 
     @Test
@@ -332,12 +333,12 @@ public class TopologyTest {
         }
     }
 
-    private static class LocalMockProcessorSupplier implements ProcessorSupplier {
+    private static class LocalMockProcessorSupplier implements ProcessorSupplier<Object, Object> {
         final static String STORE_NAME = "store";
 
         @Override
-        public Processor get() {
-            return new Processor() {
+        public Processor<Object, Object> get() {
+            return new Processor<Object, Object>() {
                 @Override
                 public void init(final ProcessorContext context) {
                     context.getStateStore(STORE_NAME);
@@ -363,7 +364,7 @@ public class TopologyTest {
             null,
             "anyTopicName",
             "sameName",
-            new MockProcessorSupplier());
+            new MockProcessorSupplier<>());
     }
 
     @Test
@@ -373,17 +374,17 @@ public class TopologyTest {
 
     @Test
     public void sinkShouldReturnNullTopicWithDynamicRouting() {
-        final TopologyDescription.Sink expectedSinkNode
-                = new InternalTopologyBuilder.Sink("sink", (key, value, record) -> record.topic() + "-" + key);
+        final TopologyDescription.Sink expectedSinkNode =
+            new InternalTopologyBuilder.Sink<>("sink", (key, value, record) -> record.topic() + "-" + key);
 
         assertThat(expectedSinkNode.topic(), equalTo(null));
     }
 
     @Test
     public void sinkShouldReturnTopicNameExtractorWithDynamicRouting() {
-        final TopicNameExtractor topicNameExtractor = (key, value, record) -> record.topic() + "-" + key;
-        final TopologyDescription.Sink expectedSinkNode
-                = new InternalTopologyBuilder.Sink("sink", topicNameExtractor);
+        final TopicNameExtractor<?, ?> topicNameExtractor = (key, value, record) -> record.topic() + "-" + key;
+        final TopologyDescription.Sink expectedSinkNode =
+            new InternalTopologyBuilder.Sink<>("sink", topicNameExtractor);
 
         assertThat(expectedSinkNode.topicNameExtractor(), equalTo(topicNameExtractor));
     }
@@ -397,6 +398,7 @@ public class TopologyTest {
                 Collections.singleton(expectedSourceNode)));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -408,6 +410,7 @@ public class TopologyTest {
                 Collections.singleton(expectedSourceNode)));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -419,6 +422,7 @@ public class TopologyTest {
                 Collections.singleton(expectedSourceNode)));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -439,6 +443,7 @@ public class TopologyTest {
                 Collections.singleton(expectedSourceNode3)));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -452,14 +457,15 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
     public void sourceAndProcessorWithStateShouldHaveSingleSubtopology() {
         final TopologyDescription.Source expectedSourceNode = addSource("source", "topic");
         final String[] store = new String[] {"store"};
-        final TopologyDescription.Processor expectedProcessorNode
-            = addProcessorWithNewStore("processor", store, expectedSourceNode);
+        final TopologyDescription.Processor expectedProcessorNode =
+            addProcessorWithNewStore("processor", store, expectedSourceNode);
 
         final Set<TopologyDescription.Node> allNodes = new HashSet<>();
         allNodes.add(expectedSourceNode);
@@ -467,6 +473,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
 
@@ -474,8 +481,8 @@ public class TopologyTest {
     public void sourceAndProcessorWithMultipleStatesShouldHaveSingleSubtopology() {
         final TopologyDescription.Source expectedSourceNode = addSource("source", "topic");
         final String[] stores = new String[] {"store1", "store2"};
-        final TopologyDescription.Processor expectedProcessorNode
-            = addProcessorWithNewStore("processor", stores, expectedSourceNode);
+        final TopologyDescription.Processor expectedProcessorNode =
+            addProcessorWithNewStore("processor", stores, expectedSourceNode);
 
         final Set<TopologyDescription.Node> allNodes = new HashSet<>();
         allNodes.add(expectedSourceNode);
@@ -483,6 +490,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -498,6 +506,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -513,6 +522,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -542,6 +552,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(2, allNodes3));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -571,6 +582,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(2, allNodes3));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -602,6 +614,7 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -611,16 +624,16 @@ public class TopologyTest {
         final String[] bothStores = new String[] {store1[0], store2[0]};
 
         final TopologyDescription.Source expectedSourceNode1 = addSource("source", "topic");
-        final TopologyDescription.Processor expectedProcessorNode1
-            = addProcessorWithNewStore("processor1", store1, expectedSourceNode1);
+        final TopologyDescription.Processor expectedProcessorNode1 =
+            addProcessorWithNewStore("processor1", store1, expectedSourceNode1);
 
         final TopologyDescription.Source expectedSourceNode2 = addSource("source2", "topic2");
-        final TopologyDescription.Processor expectedProcessorNode2
-            = addProcessorWithNewStore("processor2", store2, expectedSourceNode2);
+        final TopologyDescription.Processor expectedProcessorNode2 =
+            addProcessorWithNewStore("processor2", store2, expectedSourceNode2);
 
         final TopologyDescription.Source expectedSourceNode3 = addSource("source3", "topic3");
-        final TopologyDescription.Processor expectedProcessorNode3
-            = addProcessorWithExistingStore("processor3", bothStores, expectedSourceNode3);
+        final TopologyDescription.Processor expectedProcessorNode3 =
+            addProcessorWithExistingStore("processor3", bothStores, expectedSourceNode3);
 
         final Set<TopologyDescription.Node> allNodes = new HashSet<>();
         allNodes.add(expectedSourceNode1);
@@ -632,12 +645,14 @@ public class TopologyTest {
         expectedDescription.addSubtopology(new InternalTopologyBuilder.Subtopology(0, allNodes));
 
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
     public void shouldDescribeGlobalStoreTopology() {
         addGlobalStoreToTopologyAndExpectedDescription("globalStore", "source", "globalTopic", "processor", 0);
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
@@ -645,13 +660,14 @@ public class TopologyTest {
         addGlobalStoreToTopologyAndExpectedDescription("globalStore1", "source1", "globalTopic1", "processor1", 0);
         addGlobalStoreToTopologyAndExpectedDescription("globalStore2", "source2", "globalTopic2", "processor2", 1);
         assertThat(topology.describe(), equalTo(expectedDescription));
+        assertThat(topology.describe().hashCode(), equalTo(expectedDescription.hashCode()));
     }
 
     @Test
     public void topologyWithDynamicRoutingShouldDescribeExtractorClass() {
         final StreamsBuilder builder  = new StreamsBuilder();
 
-        final TopicNameExtractor topicNameExtractor = new TopicNameExtractor() {
+        final TopicNameExtractor<Object, Object> topicNameExtractor = new TopicNameExtractor<Object, Object>() {
             @Override
             public String extract(final Object key, final Object value, final RecordContext recordContext) {
                 return recordContext.topic() + "-" + key;
@@ -737,7 +753,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(TimeWindows.of(1))
+            .windowedBy(TimeWindows.of(ofMillis(1)))
             .count();
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -757,7 +773,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(TimeWindows.of(1))
+            .windowedBy(TimeWindows.of(ofMillis(1)))
             .count(Materialized.as("count-store"));
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -777,7 +793,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(TimeWindows.of(1))
+            .windowedBy(TimeWindows.of(ofMillis(1)))
             .count(Materialized.with(null, Serdes.Long()));
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -797,7 +813,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(SessionWindows.with(1))
+            .windowedBy(SessionWindows.with(ofMillis(1)))
             .count();
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -817,7 +833,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(SessionWindows.with(1))
+            .windowedBy(SessionWindows.with(ofMillis(1)))
             .count(Materialized.as("count-store"));
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -837,7 +853,7 @@ public class TopologyTest {
         final StreamsBuilder builder = new StreamsBuilder();
         builder.stream("input-topic")
             .groupByKey()
-            .windowedBy(SessionWindows.with(1))
+            .windowedBy(SessionWindows.with(ofMillis(1)))
             .count(Materialized.with(null, Serdes.Long()));
         final TopologyDescription describe = builder.build().describe();
         assertEquals(
@@ -859,6 +875,7 @@ public class TopologyTest {
             .groupBy((key, value) -> null)
             .count();
         final TopologyDescription describe = builder.build().describe();
+
         assertEquals(
             "Topologies:\n" +
                 "   Sub-topology: 0\n" +
@@ -954,13 +971,12 @@ public class TopologyTest {
         final KTable<Object, Object> table = builder.table("input-topic");
         table.mapValues((readOnlyKey, value) -> null);
         final TopologyDescription describe = builder.build().describe();
-        System.out.println(describe);
         Assert.assertEquals(
             "Topologies:\n" +
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-MAPVALUES-0000000003\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 "    Processor: KTABLE-MAPVALUES-0000000003 (stores: [])\n" +
@@ -982,7 +998,7 @@ public class TopologyTest {
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-MAPVALUES-0000000004\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 // previously, this was
@@ -1008,7 +1024,7 @@ public class TopologyTest {
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-MAPVALUES-0000000003\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 "    Processor: KTABLE-MAPVALUES-0000000003 (stores: [store-name])\n" +
@@ -1029,7 +1045,7 @@ public class TopologyTest {
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-FILTER-0000000003\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 "    Processor: KTABLE-FILTER-0000000003 (stores: [])\n" +
@@ -1042,16 +1058,14 @@ public class TopologyTest {
     public void kTableAnonymousMaterializedFilterShouldPreserveTopologyStructure() {
         final StreamsBuilder builder = new StreamsBuilder();
         final KTable<Object, Object> table = builder.table("input-topic");
-        table.filter(
-            (key, value) -> false,
-            Materialized.with(null, null));
+        table.filter((key, value) -> false, Materialized.with(null, null));
         final TopologyDescription describe = builder.build().describe();
         Assert.assertEquals(
             "Topologies:\n" +
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-FILTER-0000000004\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 // Previously, this was
@@ -1068,16 +1082,15 @@ public class TopologyTest {
     public void kTableNamedMaterializedFilterShouldPreserveTopologyStructure() {
         final StreamsBuilder builder = new StreamsBuilder();
         final KTable<Object, Object> table = builder.table("input-topic");
-        table.filter(
-            (key, value) -> false,
-            Materialized.<Object, Object, KeyValueStore<Bytes, byte[]>>as("store-name").withKeySerde(null).withValueSerde(null));
+        table.filter((key, value) -> false, Materialized.as("store-name"));
         final TopologyDescription describe = builder.build().describe();
+
         Assert.assertEquals(
             "Topologies:\n" +
                 "   Sub-topology: 0\n" +
                 "    Source: KSTREAM-SOURCE-0000000001 (topics: [input-topic])\n" +
                 "      --> KTABLE-SOURCE-0000000002\n" +
-                "    Processor: KTABLE-SOURCE-0000000002 (stores: [input-topic-STATE-STORE-0000000000])\n" +
+                "    Processor: KTABLE-SOURCE-0000000002 (stores: [])\n" +
                 "      --> KTABLE-FILTER-0000000003\n" +
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 "    Processor: KTABLE-FILTER-0000000003 (stores: [store-name])\n" +
@@ -1085,6 +1098,20 @@ public class TopologyTest {
                 "      <-- KTABLE-SOURCE-0000000002\n" +
                 "\n",
             describe.toString());
+    }
+
+    @Test
+    public void topologyWithStaticTopicNameExtractorShouldRespectEqualHashcodeContract() {
+        final Topology topologyA = topologyWithStaticTopicName();
+        final Topology topologyB = topologyWithStaticTopicName();
+        assertThat(topologyA.describe(), equalTo(topologyB.describe()));
+        assertThat(topologyA.describe().hashCode(), equalTo(topologyB.describe().hashCode()));
+    }
+
+    private Topology topologyWithStaticTopicName() {
+        final StreamsBuilder builder = new StreamsBuilder();
+        builder.stream("from-topic-name").to("to-topic-name");
+        return builder.build();
     }
 
     private TopologyDescription.Source addSource(final String sourceName,
@@ -1129,10 +1156,10 @@ public class TopologyTest {
             parentNames[i] = parents[i].name();
         }
 
-        topology.addProcessor(processorName, new MockProcessorSupplier(), parentNames);
+        topology.addProcessor(processorName, new MockProcessorSupplier<>(), parentNames);
         if (newStores) {
             for (final String store : storeNames) {
-                final StoreBuilder storeBuilder = EasyMock.createNiceMock(StoreBuilder.class);
+                final StoreBuilder<?> storeBuilder = EasyMock.createNiceMock(StoreBuilder.class);
                 EasyMock.expect(storeBuilder.name()).andReturn(store).anyTimes();
                 EasyMock.replay(storeBuilder);
                 topology.addStateStore(storeBuilder, processorName);
@@ -1140,8 +1167,8 @@ public class TopologyTest {
         } else {
             topology.connectProcessorAndStateStores(processorName, storeNames);
         }
-        final TopologyDescription.Processor expectedProcessorNode
-            = new InternalTopologyBuilder.Processor(processorName, new HashSet<>(Arrays.asList(storeNames)));
+        final TopologyDescription.Processor expectedProcessorNode =
+            new InternalTopologyBuilder.Processor(processorName, new HashSet<>(Arrays.asList(storeNames)));
 
         for (final TopologyDescription.Node parent : parents) {
             ((InternalTopologyBuilder.AbstractNode) parent).addSuccessor(expectedProcessorNode);
@@ -1160,8 +1187,8 @@ public class TopologyTest {
         }
 
         topology.addSink(sinkName, sinkTopic, null, null, null, parentNames);
-        final TopologyDescription.Sink expectedSinkNode
-            = new InternalTopologyBuilder.Sink(sinkName, sinkTopic);
+        final TopologyDescription.Sink expectedSinkNode =
+            new InternalTopologyBuilder.Sink(sinkName, sinkTopic);
 
         for (final TopologyDescription.Node parent : parents) {
             ((InternalTopologyBuilder.AbstractNode) parent).addSuccessor(expectedSinkNode);
@@ -1176,7 +1203,7 @@ public class TopologyTest {
                                                                 final String globalTopicName,
                                                                 final String processorName,
                                                                 final int id) {
-        final KeyValueStoreBuilder globalStoreBuilder = EasyMock.createNiceMock(KeyValueStoreBuilder.class);
+        final KeyValueStoreBuilder<?, ?> globalStoreBuilder = EasyMock.createNiceMock(KeyValueStoreBuilder.class);
         EasyMock.expect(globalStoreBuilder.name()).andReturn(globalStoreName).anyTimes();
         EasyMock.replay(globalStoreBuilder);
         topology.addGlobalStore(
@@ -1187,7 +1214,7 @@ public class TopologyTest {
             null,
             globalTopicName,
             processorName,
-            new MockProcessorSupplier());
+            new MockProcessorSupplier<>());
 
         final TopologyDescription.GlobalStore expectedGlobalStore = new InternalTopologyBuilder.GlobalStore(
             sourceName,

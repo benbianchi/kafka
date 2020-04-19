@@ -18,7 +18,6 @@ package org.apache.kafka.connect.runtime;
 
 import org.apache.kafka.connect.connector.Connector;
 import org.apache.kafka.connect.connector.ConnectorContext;
-import org.apache.kafka.connect.runtime.ConnectMetrics.LiteralSupplier;
 import org.apache.kafka.connect.runtime.ConnectMetrics.MetricGroup;
 import org.apache.kafka.connect.sink.SinkConnector;
 import org.apache.kafka.connect.source.SourceConnector;
@@ -76,7 +75,7 @@ public class WorkerConnector {
     public void initialize(ConnectorConfig connectorConfig) {
         try {
             this.config = connectorConfig.originalsStrings();
-            log.debug("{} Initializing connector {} with config {}", this, connName, config);
+            log.debug("{} Initializing connector {}", this, connName);
             if (isSinkConnector()) {
                 SinkConnectorConfig.validate(config);
             }
@@ -141,6 +140,7 @@ public class WorkerConnector {
         return state == State.STARTED;
     }
 
+    @SuppressWarnings("fallthrough")
     private void pause() {
         try {
             switch (state) {
@@ -231,7 +231,7 @@ public class WorkerConnector {
                        '}';
     }
 
-    class ConnectorMetricsGroup implements ConnectorStatus.Listener {
+    class ConnectorMetricsGroup implements ConnectorStatus.Listener, AutoCloseable {
         /**
          * Use {@link AbstractStatus.State} since it has all of the states we want,
          * unlike {@link WorkerConnector.State}.
@@ -256,12 +256,7 @@ public class WorkerConnector {
             metricGroup.addImmutableValueMetric(registry.connectorType, connectorType());
             metricGroup.addImmutableValueMetric(registry.connectorClass, connector.getClass().getName());
             metricGroup.addImmutableValueMetric(registry.connectorVersion, connector.version());
-            metricGroup.addValueMetric(registry.connectorStatus, new LiteralSupplier<String>() {
-                @Override
-                public String metricValue(long now) {
-                    return state.toString().toLowerCase(Locale.getDefault());
-                }
-            });
+            metricGroup.addValueMetric(registry.connectorStatus, now -> state.toString().toLowerCase(Locale.getDefault()));
         }
 
         public void close() {

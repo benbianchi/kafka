@@ -16,13 +16,21 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
+import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.processor.AbstractProcessor;
 import org.apache.kafka.streams.processor.Processor;
 import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.To;
+import org.apache.kafka.streams.processor.internals.ForwardingDisabledProcessorContext;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.state.ValueAndTimestamp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.kafka.streams.processor.internals.metrics.TaskMetrics.droppedRecordsSensorOrSkippedRecordsSensor;
+import static org.apache.kafka.streams.processor.internals.RecordQueue.UNKNOWN;
+import static org.apache.kafka.streams.state.ValueAndTimestamp.getValueOrNull;
 
 class KTableKTableLeftJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, V1, V2> {
     private static final Logger LOG = LoggerFactory.getLogger(KTableKTableLeftJoin.class);
@@ -60,16 +68,18 @@ class KTableKTableLeftJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, 
 
         private final KTableValueGetter<K, V2> valueGetter;
         private StreamsMetricsImpl metrics;
+        private Sensor droppedRecordsSensor;
 
         KTableKTableLeftJoinProcessor(final KTableValueGetter<K, V2> valueGetter) {
             this.valueGetter = valueGetter;
         }
 
         @Override
-        public void init(final ProcessorContext context) {
+        public void init(final ProcessorContext<Object, Object> context) {
             super.init(context);
             metrics = (StreamsMetricsImpl) context.metrics();
-            valueGetter.init(context);
+            droppedRecordsSensor = droppedRecordsSensorOrSkippedRecordsSensor(Thread.currentThread().getName(), context.taskId().toString(), metrics);
+            valueGetter.init(new ForwardingDisabledProcessorContext(context));
         }
 
         @Override
@@ -80,17 +90,28 @@ class KTableKTableLeftJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, 
                     "Skipping record due to null key. change=[{}] topic=[{}] partition=[{}] offset=[{}]",
                     change, context().topic(), context().partition(), context().offset()
                 );
-                metrics.skippedRecordsSensor().record();
+                droppedRecordsSensor.record();
                 return;
             }
 
             R newValue = null;
+            final long resultTimestamp;
             R oldValue = null;
 
-            final V2 value2 = valueGetter.get(key);
-            if (value2 == null && change.newValue == null && change.oldValue == null) {
-                return;
+            final ValueAndTimestamp<V2> valueAndTimestampRight = valueGetter.get(key);
+            final V2 value2 = getValueOrNull(valueAndTimestampRight);
+            final long timestampRight;
+
+            if (value2 == null) {
+                if (change.newValue == null && change.oldValue == null) {
+                    return;
+                }
+                timestampRight = UNKNOWN;
+            } else {
+                timestampRight = valueAndTimestampRight.timestamp();
             }
+
+            resultTimestamp = Math.max(context().timestamp(), timestampRight);
 
             if (change.newValue != null) {
                 newValue = joiner.apply(change.newValue, value2);
@@ -100,7 +121,7 @@ class KTableKTableLeftJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, 
                 oldValue = joiner.apply(change.oldValue, value2);
             }
 
-            context().forward(key, new Change<>(newValue, oldValue));
+            context().forward(key, new Change<>(newValue, oldValue), To.all().withTimestamp(resultTimestamp));
         }
 
         @Override
@@ -121,18 +142,26 @@ class KTableKTableLeftJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, 
         }
 
         @Override
-        public void init(final ProcessorContext context) {
+        public void init(final ProcessorContext<Void, Void> context) {
             valueGetter1.init(context);
             valueGetter2.init(context);
         }
 
         @Override
-        public R get(final K key) {
-            final V1 value1 = valueGetter1.get(key);
+        public ValueAndTimestamp<R> get(final K key) {
+            final ValueAndTimestamp<V1> valueAndTimestamp1 = valueGetter1.get(key);
+            final V1 value1 = getValueOrNull(valueAndTimestamp1);
 
             if (value1 != null) {
-                final V2 value2 = valueGetter2.get(key);
-                return joiner.apply(value1, value2);
+                final ValueAndTimestamp<V2> valueAndTimestamp2 = valueGetter2.get(key);
+                final V2 value2 = getValueOrNull(valueAndTimestamp2);
+                final long resultTimestamp;
+                if (valueAndTimestamp2 == null) {
+                    resultTimestamp = valueAndTimestamp1.timestamp();
+                } else {
+                    resultTimestamp = Math.max(valueAndTimestamp1.timestamp(), valueAndTimestamp2.timestamp());
+                }
+                return ValueAndTimestamp.make(joiner.apply(value1, value2), resultTimestamp);
             } else {
                 return null;
             }

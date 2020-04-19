@@ -16,20 +16,22 @@
  */
 package org.apache.kafka.streams.processor;
 
-import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.StreamsMetrics;
 import org.apache.kafka.streams.errors.StreamsException;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.Map;
 
 /**
  * Processor context interface.
+ *
+ * @param <K> the type of input keys that can be forwarded
+ * @param <V> the type of input values that can be forwarded
  */
-@InterfaceStability.Evolving
-public interface ProcessorContext {
+public interface ProcessorContext<K, V> {
 
     /**
      * Returns the application id
@@ -97,16 +99,15 @@ public interface ProcessorContext {
      * Schedules a periodic operation for processors. A processor may call this method during
      * {@link Processor#init(ProcessorContext) initialization} or
      * {@link Processor#process(Object, Object) processing} to
-     * schedule a periodic callback - called a punctuation - to {@link Punctuator#punctuate(long)}.
+     * schedule a periodic callback &mdash; called a punctuation  &mdash; to {@link Punctuator#punctuate(long)}.
      * The type parameter controls what notion of time is used for punctuation:
      * <ul>
-     *   <li>{@link PunctuationType#STREAM_TIME} - uses "stream time", which is advanced by the processing of messages
+     *   <li>{@link PunctuationType#STREAM_TIME} &mdash; uses "stream time", which is advanced by the processing of messages
      *   in accordance with the timestamp as extracted by the {@link TimestampExtractor} in use.
      *   The first punctuation will be triggered by the first record that is processed.
      *   <b>NOTE:</b> Only advanced if messages arrive</li>
-     *   <li>{@link PunctuationType#WALL_CLOCK_TIME} - uses system time (the wall-clock time),
-     *   which is advanced at the polling interval ({@link org.apache.kafka.streams.StreamsConfig#POLL_MS_CONFIG})
-     *   independent of whether new messages arrive.
+     *   <li>{@link PunctuationType#WALL_CLOCK_TIME} &mdash; uses system time (the wall-clock time),
+     *   which is advanced independent of whether new messages arrive.
      *   The first punctuation will be triggered after interval has elapsed.
      *   <b>NOTE:</b> This is best effort only as its granularity is limited by how long an iteration of the
      *   processing loop takes to complete</li>
@@ -124,8 +125,46 @@ public interface ProcessorContext {
      * @param type one of: {@link PunctuationType#STREAM_TIME}, {@link PunctuationType#WALL_CLOCK_TIME}
      * @param callback a function consuming timestamps representing the current stream or system time
      * @return a handle allowing cancellation of the punctuation schedule established by this method
+     * @deprecated Use {@link #schedule(Duration, PunctuationType, Punctuator)} instead
      */
+    @Deprecated
     Cancellable schedule(final long intervalMs,
+                         final PunctuationType type,
+                         final Punctuator callback);
+
+    /**
+     * Schedules a periodic operation for processors. A processor may call this method during
+     * {@link Processor#init(ProcessorContext) initialization} or
+     * {@link Processor#process(Object, Object) processing} to
+     * schedule a periodic callback &mdash; called a punctuation &mdash; to {@link Punctuator#punctuate(long)}.
+     * The type parameter controls what notion of time is used for punctuation:
+     * <ul>
+     *   <li>{@link PunctuationType#STREAM_TIME} &mdash; uses "stream time", which is advanced by the processing of messages
+     *   in accordance with the timestamp as extracted by the {@link TimestampExtractor} in use.
+     *   The first punctuation will be triggered by the first record that is processed.
+     *   <b>NOTE:</b> Only advanced if messages arrive</li>
+     *   <li>{@link PunctuationType#WALL_CLOCK_TIME} &mdash; uses system time (the wall-clock time),
+     *   which is advanced independent of whether new messages arrive.
+     *   The first punctuation will be triggered after interval has elapsed.
+     *   <b>NOTE:</b> This is best effort only as its granularity is limited by how long an iteration of the
+     *   processing loop takes to complete</li>
+     * </ul>
+     *
+     * <b>Skipping punctuations:</b> Punctuations will not be triggered more than once at any given timestamp.
+     * This means that "missed" punctuation will be skipped.
+     * It's possible to "miss" a punctuation if:
+     * <ul>
+     *   <li>with {@link PunctuationType#STREAM_TIME}, when stream time advances more than interval</li>
+     *   <li>with {@link PunctuationType#WALL_CLOCK_TIME}, on GC pause, too short interval, ...</li>
+     * </ul>
+     *
+     * @param interval the time interval between punctuations (supported minimum is 1 millisecond)
+     * @param type one of: {@link PunctuationType#STREAM_TIME}, {@link PunctuationType#WALL_CLOCK_TIME}
+     * @param callback a function consuming timestamps representing the current stream or system time
+     * @throws IllegalArgumentException if the interval is under 1 millisecond
+     * @return a handle allowing cancellation of the punctuation schedule established by this method
+     */
+    Cancellable schedule(final Duration interval,
                          final PunctuationType type,
                          final Punctuator callback);
 
@@ -136,7 +175,7 @@ public interface ProcessorContext {
      * @param key key
      * @param value value
      */
-    <K, V> void forward(final K key, final V value);
+    <K1 extends K, V1 extends V> void forward(final K1 key, final V1 value);
 
     /**
      * Forwards a key/value pair to the specified downstream processors.
@@ -146,7 +185,7 @@ public interface ProcessorContext {
      * @param value value
      * @param to the options to use when forwarding
      */
-    <K, V> void forward(final K key, final V value, final To to);
+    <K1 extends K, V1 extends V> void forward(final K1 key, final V1 value, final To to);
 
     /**
      * Forwards a key/value pair to one of the downstream processors designated by childIndex
@@ -157,7 +196,7 @@ public interface ProcessorContext {
      */
     // TODO when we remove this method, we can also remove `ProcessorNode#children`
     @Deprecated
-    <K, V> void forward(final K key, final V value, final int childIndex);
+    <K1 extends K, V1 extends V> void forward(final K1 key, final V1 value, final int childIndex);
 
     /**
      * Forwards a key/value pair to one of the downstream processors designated by the downstream processor name
@@ -167,7 +206,7 @@ public interface ProcessorContext {
      * @deprecated please use {@link #forward(Object, Object, To)} instead
      */
     @Deprecated
-    <K, V> void forward(final K key, final V value, final String childName);
+    <K1 extends K, V1 extends V> void forward(final K1 key, final V1 value, final String childName);
 
     /**
      * Requests a commit

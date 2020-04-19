@@ -19,11 +19,12 @@ package org.apache.kafka.streams.kstream;
 import org.apache.kafka.streams.kstream.internals.suppress.EagerBufferConfigImpl;
 import org.apache.kafka.streams.kstream.internals.suppress.FinalResultsSuppressionBuilder;
 import org.apache.kafka.streams.kstream.internals.suppress.StrictBufferConfigImpl;
-import org.apache.kafka.streams.kstream.internals.suppress.SuppressedImpl;
+import org.apache.kafka.streams.kstream.internals.suppress.SuppressedInternal;
 
 import java.time.Duration;
+import java.util.Map;
 
-public interface Suppressed<K> {
+public interface Suppressed<K> extends NamedOperation<Suppressed<K>> {
 
     /**
      * Marker interface for a buffer configuration that is "strict" in the sense that it will strictly
@@ -33,11 +34,20 @@ public interface Suppressed<K> {
 
     }
 
+    /**
+     * Marker interface for a buffer configuration that will strictly enforce size constraints
+     * (bytes and/or number of records) on the buffer, so it is suitable for reducing duplicate
+     * results downstream, but does not promise to eliminate them entirely.
+     */
+    interface EagerBufferConfig extends BufferConfig<EagerBufferConfig> {
+
+    }
+
     interface BufferConfig<BC extends BufferConfig<BC>> {
         /**
          * Create a size-constrained buffer in terms of the maximum number of keys it will store.
          */
-        static BufferConfig<?> maxRecords(final long recordLimit) {
+        static EagerBufferConfig maxRecords(final long recordLimit) {
             return new EagerBufferConfigImpl(recordLimit, Long.MAX_VALUE);
         }
 
@@ -49,7 +59,7 @@ public interface Suppressed<K> {
         /**
          * Create a size-constrained buffer in terms of the maximum number of bytes it will use.
          */
-        static BufferConfig<?> maxBytes(final long byteLimit) {
+        static EagerBufferConfig maxBytes(final long byteLimit) {
             return new EagerBufferConfigImpl(Long.MAX_VALUE, byteLimit);
         }
 
@@ -103,19 +113,31 @@ public interface Suppressed<K> {
         StrictBufferConfig shutDownWhenFull();
 
         /**
-         * Sets the buffer to use on-disk storage if it requires more memory than the constraints allow.
-         *
-         * This buffer is "strict" in the sense that it will never emit early.
-         */
-        StrictBufferConfig spillToDiskWhenFull();
-
-        /**
          * Set the buffer to just emit the oldest records when any of its constraints are violated.
          *
          * This buffer is "not strict" in the sense that it may emit early, so it is suitable for reducing
          * duplicate results downstream, but does not promise to eliminate them.
          */
-        BufferConfig emitEarlyWhenFull();
+        EagerBufferConfig emitEarlyWhenFull();
+
+        /**
+         * Disable the changelog for this suppression's internal buffer.
+         * This will turn off fault-tolerance for the suppression, and will result in data loss in the event of a rebalance.
+         * By default the changelog is enabled.
+         * @return this
+         */
+        BC withLoggingDisabled();
+
+        /**
+         * Indicates that a changelog topic should be created containing the currently suppressed
+         * records. Due to the short-lived nature of records in this topic it is likely more
+         * compactable than changelog topics for KTables.
+         *
+         * @param config Configs that should be applied to the changelog. Note: Any unrecognized
+         *               configs will be ignored.
+         * @return this
+         */
+        BC withLoggingEnabled(final Map<String, String> config);
     }
 
     /**
@@ -130,18 +152,16 @@ public interface Suppressed<K> {
      *
      * To accomplish this, the operator will buffer events from the window until the window close (that is,
      * until the end-time passes, and additionally until the grace period expires). Since windowed operators
-     * are required to reject late events for a window whose grace period is expired, there is an additional
+     * are required to reject out-of-order events for a window whose grace period is expired, there is an additional
      * guarantee that the final results emitted from this suppression will match any queriable state upstream.
      *
      * @param bufferConfig A configuration specifying how much space to use for buffering intermediate results.
      *                     This is required to be a "strict" config, since it would violate the "final results"
      *                     property to emit early and then issue an update later.
-     * @param <K> The key type for the KTable to apply this suppression to. "Final results" mode is only available
-     *           on Windowed KTables (this is enforced by the type parameter).
      * @return a "final results" mode suppression configuration
      */
-    static <K extends Windowed> Suppressed<K> untilWindowCloses(final StrictBufferConfig bufferConfig) {
-        return new FinalResultsSuppressionBuilder<>(bufferConfig);
+    static Suppressed<Windowed> untilWindowCloses(final StrictBufferConfig bufferConfig) {
+        return new FinalResultsSuppressionBuilder<>(null, bufferConfig);
     }
 
     /**
@@ -155,6 +175,23 @@ public interface Suppressed<K> {
      * @return a suppression configuration
      */
     static <K> Suppressed<K> untilTimeLimit(final Duration timeToWaitForMoreEvents, final BufferConfig bufferConfig) {
-        return new SuppressedImpl<>(timeToWaitForMoreEvents, bufferConfig, null, false);
+        return new SuppressedInternal<>(null, timeToWaitForMoreEvents, bufferConfig, null, false);
     }
+
+    /**
+     * Use the specified name for the suppression node in the topology.
+     * <p>
+     * This can be used to insert a suppression without changing the rest of the topology names
+     * (and therefore not requiring an application reset).
+     * <p>
+     * Note however, that once a suppression has buffered some records, removing it from the topology would cause
+     * the loss of those records.
+     * <p>
+     * A suppression can be "disabled" with the configuration {@code untilTimeLimit(Duration.ZERO, ...}.
+     *
+     * @param name The name to be used for the suppression node and changelog topic
+     * @return The same configuration with the addition of the given {@code name}.
+     */
+    @Override
+    Suppressed<K> withName(final String name);
 }

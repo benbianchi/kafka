@@ -35,6 +35,7 @@ import org.apache.kafka.test.MockKeyValueStore;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.util.Properties;
 
 import static org.apache.kafka.test.StreamsTestUtils.getStreamsConfig;
@@ -95,7 +96,7 @@ public class AbstractProcessorContextTest {
 
     @Test
     public void shouldReturnNullIfTopicEqualsNonExistTopic() {
-        context.setRecordContext(new ProcessorRecordContext(0, 0, 0, AbstractProcessorContext.NONEXIST_TOPIC));
+        context.setRecordContext(new ProcessorRecordContext(0, 0, 0, AbstractProcessorContext.NONEXIST_TOPIC, null));
         assertThat(context.topic(), nullValue());
     }
 
@@ -153,7 +154,7 @@ public class AbstractProcessorContextTest {
 
     @Test
     public void shouldReturnNullIfHeadersAreNotSet() {
-        context.setRecordContext(new ProcessorRecordContext(0, 0, 0, AbstractProcessorContext.NONEXIST_TOPIC));
+        context.setRecordContext(new ProcessorRecordContext(0, 0, 0, AbstractProcessorContext.NONEXIST_TOPIC, null));
         assertThat(context.headers(), nullValue());
     }
 
@@ -170,16 +171,20 @@ public class AbstractProcessorContextTest {
     @SuppressWarnings("unchecked")
     @Test
     public void appConfigsShouldReturnParsedValues() {
-        assertThat((Class<RocksDBConfigSetter>) context.appConfigs().get(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG), equalTo(RocksDBConfigSetter.class));
+        assertThat(
+            context.appConfigs().get(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG),
+            equalTo(RocksDBConfigSetter.class));
     }
 
     @Test
     public void appConfigsShouldReturnUnrecognizedValues() {
-        assertThat((String) context.appConfigs().get("user.supplied.config"), equalTo("user-suppplied-value"));
+        assertThat(
+            context.appConfigs().get("user.supplied.config"),
+            equalTo("user-suppplied-value"));
     }
 
 
-    private static class TestProcessorContext extends AbstractProcessorContext {
+    private static class TestProcessorContext extends AbstractProcessorContext<Object, Object> {
         static Properties config;
         static {
             config = getStreamsConfig();
@@ -198,7 +203,17 @@ public class AbstractProcessorContextTest {
         }
 
         @Override
-        public Cancellable schedule(final long interval, final PunctuationType type, final Punctuator callback) {
+        @Deprecated
+        public Cancellable schedule(final long interval,
+                                    final PunctuationType type,
+                                    final Punctuator callback) {
+            return null;
+        }
+
+        @Override
+        public Cancellable schedule(final Duration interval,
+                                    final PunctuationType type,
+                                    final Punctuator callback) throws IllegalArgumentException {
             return null;
         }
 
@@ -209,17 +224,14 @@ public class AbstractProcessorContextTest {
         public <K, V> void forward(final K key, final V value, final To to) {}
 
         @Override
+        @Deprecated
         public <K, V> void forward(final K key, final V value, final int childIndex) {}
 
         @Override
+        @Deprecated
         public <K, V> void forward(final K key, final V value, final String childName) {}
 
         @Override
         public void commit() {}
-
-        @Override
-        public long streamTime() {
-            throw new RuntimeException("not implemented");
-        }
     }
 }

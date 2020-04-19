@@ -19,15 +19,17 @@ package org.apache.kafka.streams.kstream;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
 
+import java.time.Duration;
 import java.util.Map;
 
 import static org.apache.kafka.streams.kstream.internals.WindowingDefaults.DEFAULT_RETENTION_MS;
 
 /**
  * The window specification for fixed size windows that is used to define window boundaries and grace period.
- *
- * Grace period defines how long to wait on late events, where lateness is defined as (stream_time - record_timestamp).
- *
+ * <p>
+ * Grace period defines how long to wait on out-of-order events. That is, windows will continue to accept new records until {@code stream_time >= window_end + grace_period}.
+ * Records that arrive after the grace period passed are considered <em>late</em> and will not be processed but are dropped.
+ * <p>
  * Warning: It may be unsafe to use objects of this class in set- or map-like collections,
  * since the equals and hashCode methods depend on mutable fields.
  *
@@ -45,7 +47,7 @@ public abstract class Windows<W extends Window> {
 
     protected Windows() {}
 
-    @SuppressWarnings("deprecation") // remove this constructor when we remove segments.
+    @Deprecated // remove this constructor when we remove segments.
     Windows(final int segments) {
         this.segments = segments;
     }
@@ -57,7 +59,7 @@ public abstract class Windows<W extends Window> {
      * @param durationMs the window retention time in milliseconds
      * @return itself
      * @throws IllegalArgumentException if {@code durationMs} is negative
-     * @deprecated since 2.1. Use {@link Materialized#withRetention(long)}
+     * @deprecated since 2.1. Use {@link Materialized#withRetention(Duration)}
      *             or directly configure the retention in a store supplier and use {@link Materialized#as(WindowBytesStoreSupplier)}.
      */
     @Deprecated
@@ -76,26 +78,10 @@ public abstract class Windows<W extends Window> {
      * @return the window maintain duration
      * @deprecated since 2.1. Use {@link Materialized#retention} instead.
      */
-    @SuppressWarnings("DeprecatedIsStillUsed")
     @Deprecated
     public long maintainMs() {
         return maintainDurationMs;
     }
-
-    /**
-     * Return the segment interval in milliseconds.
-     *
-     * @return the segment interval
-     * @deprecated since 2.1. Instead, directly configure the segment interval in a store supplier and use {@link Materialized#as(WindowBytesStoreSupplier)}.
-     */
-    @Deprecated
-    public long segmentInterval() {
-        // Pinned arbitrarily to a minimum of 60 seconds. Profiling may indicate a different value is more efficient.
-        final long minimumSegmentInterval = 60_000L;
-        // Scaled to the (possibly overridden) retention period
-        return Math.max(maintainMs() / (segments - 1), minimumSegmentInterval);
-    }
-
 
     /**
      * Set the number of segments to be used for rolling the window store.
@@ -133,9 +119,9 @@ public abstract class Windows<W extends Window> {
 
     /**
      * Return the window grace period (the time to admit
-     * late-arriving events after the end of the window.)
+     * out-of-order events after the end of the window.)
      *
-     * Lateness is defined as (stream_time - record_timestamp).
+     * Delay is defined as (stream_time - record_timestamp).
      */
     public abstract long gracePeriodMs();
 }

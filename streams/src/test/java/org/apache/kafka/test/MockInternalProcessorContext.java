@@ -17,15 +17,35 @@
 package org.apache.kafka.test;
 
 import org.apache.kafka.streams.processor.MockProcessorContext;
+import org.apache.kafka.streams.processor.StateRestoreCallback;
+import org.apache.kafka.streams.processor.StateStore;
+import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
 import org.apache.kafka.streams.processor.internals.ProcessorNode;
 import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
+import org.apache.kafka.streams.processor.internals.RecordCollector;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.internals.ThreadCache;
 
-public class MockInternalProcessorContext extends MockProcessorContext implements InternalProcessorContext {
-    private ProcessorNode currentNode;
-    private long streamTime;
+import java.io.File;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Properties;
+
+public class MockInternalProcessorContext
+    extends MockProcessorContext
+    implements InternalProcessorContext<Object, Object> {
+
+    private final Map<String, StateRestoreCallback> restoreCallbacks = new LinkedHashMap<>();
+    private ProcessorNode<?, ?> currentNode;
+    private RecordCollector recordCollector;
+
+    public MockInternalProcessorContext() {
+    }
+
+    public MockInternalProcessorContext(final Properties config, final TaskId taskId, final File stateDir) {
+        super(config, taskId, stateDir);
+    }
 
     @Override
     public StreamsMetricsImpl metrics() {
@@ -49,12 +69,12 @@ public class MockInternalProcessorContext extends MockProcessorContext implement
     }
 
     @Override
-    public void setCurrentNode(final ProcessorNode currentNode) {
+    public void setCurrentNode(final ProcessorNode<?, ?> currentNode) {
         this.currentNode = currentNode;
     }
 
     @Override
-    public ProcessorNode currentNode() {
+    public ProcessorNode<?, ?> currentNode() {
         return currentNode;
     }
 
@@ -64,21 +84,27 @@ public class MockInternalProcessorContext extends MockProcessorContext implement
     }
 
     @Override
-    public void initialize() {
+    public void initialize() {}
 
+    @Override
+    public void uninitialize() {}
+
+    @Override
+    public RecordCollector recordCollector() {
+        return recordCollector;
+    }
+
+    public void setRecordCollector(final RecordCollector recordCollector) {
+        this.recordCollector = recordCollector;
     }
 
     @Override
-    public void uninitialize() {
-
+    public void register(final StateStore store, final StateRestoreCallback stateRestoreCallback) {
+        restoreCallbacks.put(store.name(), stateRestoreCallback);
+        super.register(store, stateRestoreCallback);
     }
 
-    @Override
-    public long streamTime() {
-        return streamTime;
-    }
-
-    public void setStreamTime(final long streamTime) {
-        this.streamTime = streamTime;
+    public StateRestoreCallback stateRestoreCallback(final String storeName) {
+        return restoreCallbacks.get(storeName);
     }
 }

@@ -31,19 +31,19 @@ import java.util.Map;
 import java.util.Objects;
 
 
-public abstract class AbstractProcessorContext implements InternalProcessorContext {
+public abstract class AbstractProcessorContext<K, V> implements InternalProcessorContext<K, V> {
 
-    static final String NONEXIST_TOPIC = "__null_topic__";
+    public static final String NONEXIST_TOPIC = "__null_topic__";
     private final TaskId taskId;
     private final String applicationId;
     private final StreamsConfig config;
     private final StreamsMetricsImpl metrics;
-    private final Serde keySerde;
+    private final Serde<?> keySerde;
     private final ThreadCache cache;
-    private final Serde valueSerde;
+    private final Serde<?> valueSerde;
     private boolean initialized;
     protected ProcessorRecordContext recordContext;
-    protected ProcessorNode currentNode;
+    protected ProcessorNode<?, ?> currentNode;
     final StateManager stateManager;
 
     public AbstractProcessorContext(final TaskId taskId,
@@ -98,7 +98,7 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
             throw new IllegalStateException("Can only create state stores during initialization.");
         }
         Objects.requireNonNull(store, "store must not be null");
-        stateManager.register(store, stateRestoreCallback);
+        stateManager.registerStore(store, stateRestoreCallback);
     }
 
     /**
@@ -127,7 +127,6 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
         if (recordContext == null) {
             throw new IllegalStateException("This should not happen as partition() should only be called while a record is processed");
         }
-
         return recordContext.partition();
     }
 
@@ -139,7 +138,6 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
         if (recordContext == null) {
             throw new IllegalStateException("This should not happen as offset() should only be called while a record is processed");
         }
-
         return recordContext.offset();
     }
 
@@ -148,7 +146,6 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
         if (recordContext == null) {
             throw new IllegalStateException("This should not happen as headers() should only be called while a record is processed");
         }
-
         return recordContext.headers();
     }
 
@@ -160,7 +157,6 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
         if (recordContext == null) {
             throw new IllegalStateException("This should not happen as timestamp() should only be called while a record is processed");
         }
-
         return recordContext.timestamp();
     }
 
@@ -188,12 +184,12 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
     }
 
     @Override
-    public void setCurrentNode(final ProcessorNode currentNode) {
+    public void setCurrentNode(final ProcessorNode<?, ?> currentNode) {
         this.currentNode = currentNode;
     }
 
     @Override
-    public ProcessorNode currentNode() {
+    public ProcessorNode<?, ?> currentNode() {
         return currentNode;
     }
 

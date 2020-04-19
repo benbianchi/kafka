@@ -21,9 +21,9 @@ import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.streams.errors.StreamsException;
 
 import java.nio.ByteBuffer;
-import java.util.Map;
+import java.util.Objects;
 
-public class ChangedSerializer<T> implements Serializer<Change<T>> {
+public class ChangedSerializer<T> implements Serializer<Change<T>>, WrappingNullableSerializer<Change<T>, T> {
 
     private static final int NEWFLAG_SIZE = 1;
 
@@ -37,13 +37,11 @@ public class ChangedSerializer<T> implements Serializer<Change<T>> {
         return inner;
     }
 
-    public void setInner(final Serializer<T> inner) {
-        this.inner = inner;
-    }
-
     @Override
-    public void configure(final Map<String, ?> configs, final boolean isKey) {
-        // do nothing
+    public void setIfUnset(final Serializer<T> defaultSerializer) {
+        if (inner == null) {
+            inner = Objects.requireNonNull(defaultSerializer, "defaultSerializer cannot be null");
+        }
     }
 
     /**
@@ -56,14 +54,16 @@ public class ChangedSerializer<T> implements Serializer<Change<T>> {
 
         // only one of the old / new values would be not null
         if (data.newValue != null) {
-            if (data.oldValue != null)
+            if (data.oldValue != null) {
                 throw new StreamsException("Both old and new values are not null (" + data.oldValue
-                        + " : " + data.newValue + ") in ChangeSerializer, which is not allowed.");
+                    + " : " + data.newValue + ") in ChangeSerializer, which is not allowed.");
+            }
 
             serializedKey = inner.serialize(topic, headers, data.newValue);
         } else {
-            if (data.oldValue == null)
+            if (data.oldValue == null) {
                 throw new StreamsException("Both old and new values are null in ChangeSerializer, which is not allowed.");
+            }
 
             serializedKey = inner.serialize(topic, headers, data.oldValue);
         }
